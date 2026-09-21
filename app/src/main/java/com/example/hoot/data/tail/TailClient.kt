@@ -152,11 +152,11 @@ class TailClient(context: Context) {
     suspend fun fetchRecentTextEntries(
         pkg: String,
         habitId: String? = null,
-        limit: Int = 5
+        limit: Int = RECENT_FALLBACK_LIMIT
     ): List<TailTextEntry> = withContext(Dispatchers.IO) {
         val uri = Uri.withAppendedPath(authority(pkg), PATH_TEXT_HABITS_RECENT)
             .buildUpon()
-            .appendQueryParameter("limit", limit.coerceIn(1, 50).toString())
+            .appendQueryParameter("limit", limit.coerceIn(1, RECENT_FALLBACK_LIMIT).toString())
             .build()
         parseTextRows(queryOrNull(uri = uri)) { it == habitId || habitId == null }
     }
@@ -185,8 +185,13 @@ class TailClient(context: Context) {
             val rows = parseTextRows(v2) { true }
             return@withContext TailTextHistory(full = true, entries = rows)
         }
-        // v1 fallback: bounded recent slice only.
-        val recent = fetchRecentTextEntries(pkg, habitId, limit = 5)
+        // v1 fallback: bounded recent slice (backlog bug fix, 2026-09: the old
+        // limit=5 meant only the 5 newest rows per habit ever synced — a
+        // water habit with a multi-week backlog showed a single day of data
+        // and the "first run = full backlog" promise silently broke). Pull
+        // the maximum slice the v1 surface allows; dedup keys make re-pulls
+        // idempotent, so the bounded window is safe to re-read each pass.
+        val recent = fetchRecentTextEntries(pkg, habitId, limit = RECENT_FALLBACK_LIMIT)
         TailTextHistory(full = false, entries = recent)
     }
 
@@ -382,6 +387,15 @@ class TailClient(context: Context) {
 
         /** Soft cap on any single provider probe (binder calls can block). */
         const val PROBE_TIMEOUT_MS = 8_000L
+
+        /**
+         * v1 fallback slice size (backlog fix 2026-09): the old 5-row slice
+         * starved water/pills histories — only the newest entries ever
+         * reached `tail_entries`, so a fully-backlogged water habit rendered
+         * ONE day on the Home card. Up to ~3 months of daily entries; stable
+         * dedup keys keep re-pulls idempotent.
+         */
+        const val RECENT_FALLBACK_LIMIT = 100
 
         /** Shared formatter for Tail's text log keys. */
         val TAIL_TS_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")

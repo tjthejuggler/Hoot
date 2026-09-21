@@ -10,30 +10,37 @@ import org.json.JSONObject
 import java.io.File
 
 /**
- * **Protocol v6** — the Hoot → Tail WRITE path (the mirror of the read-only
- * [TailClient]). Fires permission-guarded broadcasts that Tail's
- * `CompanionEntryReceiver` consumes, so a meal/supplement/water change made
- * in Hoot also lands in Tail for that day — the joint-habit loop closes in
- * both directions.
+ * **Protocol v7 — STRICTLY ONE-WAY (Tail → Hoot).**
  *
- * Two actions (both mirrored by Tail-side handling):
- *  - [ACTION_ADD_TEXT_ENTRY] — text habits (pills, water, electrolytes):
- *    Tail appends the line to the habit's text log AND increments its daily
- *    count, exactly like an in-app Tail entry.
- *  - [ACTION_ADD_MEAL_LOG] — meal habits: Tail inserts a structured MealLog
- *    (title/kcal/macros/ingredients/summary).
+ * User directive (feedback 2026-09): Hoot must NEVER change, adjust or write
+ * anything in the Tail app — not for today, not for past days. Tail can
+ * change Hoot; Hoot cannot change Tail. The former v6 write path (broadcasts
+ * into Tail's `CompanionEntryReceiver` so Hoot captures mirrored into Tail)
+ * is therefore DISABLED at this single choke point: every push is a logged
+ * no-op, which neutralizes all current and future call sites
+ * ([com.example.hoot.data.intake.IntakeCaptureService] meals/supplements/
+ * water quick-adds, AddMealScreen, AddSupplementScreen).
  *
- * Delivery semantics: broadcasts are best-effort (Tail not installed /
- * provider disabled → silently dropped). Hoot's own data is ALWAYS the
- * source of truth for Hoot; the push is a pure projection. Because Tail's
- * write fires its change feed back, [TailSyncReceiver] will pull the
- * reflection — [EchoRegistry] makes that pull skip rows Hoot itself pushed
- * (no duplicates, no cursor rewinds).
+ * What still exists:
+ *  - [ACTION_ADD_TEXT_ENTRY] / [ACTION_ADD_MEAL_LOG] constants stay for
+ *    documentation/back-compat with older builds' protocol notes.
+ *  - [EchoRegistry] keeps working: entries pushed by v6 builds may still
+ *    reflect back through Tail's text log, and the pull pipeline must keep
+ *    skipping them (no double-count). New pushes no longer register.
+ *
+ * The read path ([TailClient], [TailSyncManager]) is untouched: Tail → Hoot
+ * ingestion remains the only data bridge between the apps.
  */
 class TailPushClient(private val context: Context) {
 
     companion object {
         private const val TAG = "TailPushClient"
+
+        /**
+         * One-way policy switch (feedback 2026-09). `false` = Hoot never
+         * writes to Tail. Flip ONLY if the product decision reverses.
+         */
+        const val WRITE_ENABLED = false
 
         /** Must match Tail's [com.example.tail.ipc.CompanionEntryReceiver]. */
         const val ACTION_ADD_TEXT_ENTRY = "com.example.tail.ACTION_ADD_TEXT_ENTRY"
@@ -51,11 +58,16 @@ class TailPushClient(private val context: Context) {
     }
 
     /**
-     * Push one text entry (pills / water / electrolytes / misc text habit).
-     * Tail appends it to the habit's text log AND increments its daily count.
+     * DISABLED under one-way sync (see [WRITE_ENABLED]): logs and returns
+     * without touching Tail, so a Hoot-side meal/supplement/water change can
+     * never adjust any Tail habit — today or in the past.
      */
     suspend fun pushTextEntry(habitName: String, text: String, timestampMs: Long) =
         withContext(Dispatchers.IO) {
+            if (!WRITE_ENABLED) {
+                Log.d(TAG, "one-way sync: text push to '$habitName' suppressed")
+                return@withContext
+            }
             val entryId = "hoot:${java.util.UUID.randomUUID()}"
             val intent = Intent(ACTION_ADD_TEXT_ENTRY).apply {
                 setPackage(TAIL_PACKAGE)
@@ -96,6 +108,10 @@ class TailPushClient(private val context: Context) {
         healthNotes: String?,
         timestampMs: Long
     ) = withContext(Dispatchers.IO) {
+        if (!WRITE_ENABLED) {
+            Log.d(TAG, "one-way sync: meal push to '$habitName' suppressed")
+            return@withContext
+        }
         val entryId = "hoot:${java.util.UUID.randomUUID()}"
         val json = JSONObject().apply {
             put("title", title)

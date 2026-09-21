@@ -399,9 +399,13 @@ class NutritionProcessor(
             val outcome = resolver.resolveSupplementGroupSingle(group.supplementIds, rateGuard)
             val ok = outcome is NutritionResolver.ResolveOutcome.Resolved ||
                 outcome is NutritionResolver.ResolveOutcome.Missing
-            if (!ok && outcome is NutritionResolver.ResolveOutcome.Failed) {
-                resolver.markSupplementGroupFailed(group)
-            }
+            // Attempt-cap EVERY terminal failure — including NotConfigured
+            // (LLM off). The old Failed-only guard left unresolvable groups
+            // at resolveAttempts=0 forever, so they re-queued on EVERY app
+            // open: the "Analyzing nutrition… N foods left" chip appeared on
+            // each fresh launch even with nothing new consumed (feedback
+            // 2026-09). Manual retry still resets the counters.
+            if (!ok) resolver.markSupplementGroupFailed(group)
             progress.finish(ok, group.displayName, group.touchedDays)
         }
     }

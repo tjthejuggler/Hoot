@@ -20,6 +20,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -49,13 +50,20 @@ import com.example.hoot.ui.theme.ScoreHigh
  * scored by [com.example.hoot.domain.insights.SmartFoodMatcher] (pure,
  * cache-first, instant). Vertical list (2026-09: widened to ~12 picks, the
  * old horizontal 6-card strip hid most suggestions); tap row → detail sheet.
+ *
+ * Feedback 2026-09: the dashboard keeps the curated top slice; a "See all"
+ * action opens [AllSmartPicksSheet] — the FULL deficiency-keyed ranking
+ * ([com.example.hoot.domain.insights.SmartFoodProvider.SmartPicksResult.allPicks])
+ * with the current gaps summarized up top.
  */
 @Composable
 fun SmartPicksSection(
     picks: List<SmartFoodPick>,
+    allPicks: List<SmartFoodPick> = emptyList(),
     cacheCold: Boolean,
     loading: Boolean,
-    onOpenPick: (SmartFoodPick) -> Unit
+    onOpenPick: (SmartFoodPick) -> Unit,
+    onSeeAll: () -> Unit = {}
 ) {
     Column(Modifier.fillMaxWidth()) {
         SectionHeader(
@@ -66,6 +74,11 @@ fun SmartPicksSection(
         when {
             picks.isNotEmpty() -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 picks.forEach { pick -> SmartPickRow(pick, onClick = { onOpenPick(pick) }) }
+                if (allPicks.size > picks.size) {
+                    TextButton(onClick = onSeeAll) {
+                        Text("See all ${allPicks.size} recommendations")
+                    }
+                }
             }
             cacheCold && !loading -> Card(Modifier.fillMaxWidth()) {
                 EmptyState(
@@ -77,6 +90,64 @@ fun SmartPicksSection(
                 )
             }
             // else: loading or no gaps → show nothing (Focus now handles gaps).
+        }
+    }
+}
+
+/**
+ * Full recommendations sheet (feedback 2026-09): EVERY scored food for the
+ * current long-term deficiencies, ranked best-first, with the gap list it is
+ * keyed to. Rows reuse [SmartPickRow]; tapping one opens the same detail
+ * sheet as the dashboard cards.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AllSmartPicksSheet(
+    picks: List<SmartFoodPick>,
+    gaps: List<com.example.hoot.domain.insights.FocusNowItem>,
+    loading: Boolean,
+    onOpenPick: (SmartFoodPick) -> Unit,
+    onDismiss: () -> Unit
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        LazyColumn(
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            item {
+                Column {
+                    Text(
+                        "All smart recommendations",
+                        style = MaterialTheme.typography.titleLarge
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        if (gaps.isEmpty()) "No active gaps right now."
+                        else "Keyed to your current gaps: " +
+                            gaps.joinToString { g -> g.name } + ". " +
+                            "Ranked by how much of each deficit one serving covers.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            if (picks.isEmpty() && !loading) {
+                item {
+                    Card(Modifier.fillMaxWidth()) {
+                        EmptyState(
+                            emoji = "🛒",
+                            title = "Nothing to recommend yet",
+                            body = "Once foods are analyzed and gaps exist, every matching " +
+                                "food shows up here ranked for your deficiencies.",
+                            modifier = Modifier.padding(0.dp)
+                        )
+                    }
+                }
+            }
+            items(picks.size) { i ->
+                SmartPickRow(picks[i], onClick = { onOpenPick(picks[i]) })
+            }
         }
     }
 }

@@ -40,7 +40,14 @@ class SmartFoodProvider(
 
     /** Outcome of one refresh — surfaced for logging/tests. */
     data class SmartPicksResult(
+        /** Curated top slice for the Home section (diversity-selected). */
         val picks: List<SmartFoodPick>,
+        /**
+         * Full ranking (feedback 2026-09 "see all"): same scoring WITHOUT the
+         * Home cap or diversity de-dup — every food covering ≥1 current gap,
+         * best score first. Powers [com.example.hoot.ui.home.AllSmartPicksSheet].
+         */
+        val allPicks: List<SmartFoodPick> = emptyList(),
         val gapCount: Int,
         val cacheCandidates: Int,
         val llmUsed: Boolean
@@ -91,7 +98,7 @@ class SmartFoodProvider(
             )
         }
         if (smartGaps.isEmpty()) {
-            return SmartPicksResult(emptyList(), 0, 0, llmUsed = false)
+            return SmartPicksResult(emptyList(), emptyList(), 0, 0, llmUsed = false)
                 .also { memo(sig, it) }
         }
 
@@ -145,25 +152,27 @@ class SmartFoodProvider(
         )
 
         val candidates = cacheCandidates()
-        var picks = SmartFoodMatcher.match(smartGaps, excesses, candidates, dietFilter, MAX_PICKS)
-
+        var pool = candidates
         // ---- (d) Seed top-up (thin cache, zero LLM) --------------------------
         if (candidates.size < MIN_CANDIDATES) {
             val seedTopUp = seedTopUp(candidates)
-            if (seedTopUp.isNotEmpty()) {
-                // Seed foods enter the SAME scoring pipeline (deterministic,
-                // diet-filtered by the matcher like every other candidate).
-                val merged = candidates + seedTopUp
-                picks = SmartFoodMatcher.match(smartGaps, excesses, merged, dietFilter, MAX_PICKS)
-            }
+            if (seedTopUp.isNotEmpty()) pool = candidates + seedTopUp
         }
+
+        // Home section: capped + diversity-de-duped.
+        val picks = SmartFoodMatcher.match(smartGaps, excesses, pool, dietFilter, MAX_PICKS)
+        // "See all" ranking (feedback 2026-09): same scoring, NO cap and NO
+        // diversity filter — a much longer list of specific foods keyed to
+        // the current long-term deficiencies. Cache-first, still zero LLM.
+        val allPicks = SmartFoodMatcher.match(smartGaps, excesses, pool, dietFilter, Int.MAX_VALUE)
 
         Log.i(
             TAG,
             "smartPicks($day): gaps=${smartGaps.size} excess=${excesses.size} " +
-                "cache=${candidates.size} seedTopUp=${candidates.size < MIN_CANDIDATES} picks=${picks.size}"
+                "cache=${candidates.size} seedTopUp=${candidates.size < MIN_CANDIDATES} " +
+                "picks=${picks.size} allPicks=${allPicks.size}"
         )
-        return SmartPicksResult(picks, smartGaps.size, candidates.size, llmUsed = false)
+        return SmartPicksResult(picks, allPicks, smartGaps.size, candidates.size, llmUsed = false)
             .also { memo(sig, it) }
     }
 

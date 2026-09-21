@@ -179,6 +179,15 @@ class TailSyncManager(
                         runCatching { aggregator.recomputeDays(days) }
                             .onFailure { android.util.Log.e(TAG, "water ledger recompute failed", it) }
                     }
+                    // Backlog heal (water-card fix, 2026-09): a fresh mapping
+                    // (or a repaired v1 slice) must fill EVERY historical
+                    // water day, not just the days in this pass — days whose
+                    // cursor had already advanced past their water rows would
+                    // otherwise stay at 0 L forever. Idempotent per day.
+                    if (rows.isNotEmpty()) {
+                        runCatching { aggregator.recomputeDays(tailEntries.distinctWaterDays()) }
+                            .onFailure { android.util.Log.e(TAG, "water backlog recompute failed", it) }
+                    }
                 }
 
                 // ── Miscellaneous habits (v5, N habits, raw-text entries) ─

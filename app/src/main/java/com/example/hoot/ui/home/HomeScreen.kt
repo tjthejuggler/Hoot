@@ -107,6 +107,8 @@ fun HomeScreen(
     var tiersExpanded by remember { mutableStateOf(false) }
     var smartPickDetail by remember { mutableStateOf<com.example.hoot.domain.insights.SmartFoodPick?>(null) }
     var showDatePicker by remember { mutableStateOf(false) }
+    var showConsumedDetail by remember { mutableStateOf(false) }
+    var showAllPicks by remember { mutableStateOf(false) }
 
     // Selected dashboard day (header arrows / date picker navigate it).
     val selectedDay by vm.day.collectAsStateWithLifecycle()
@@ -121,6 +123,25 @@ fun HomeScreen(
     }
     smartPickDetail?.let { pick ->
         SmartPickDetailSheet(pick = pick, onDismiss = { smartPickDetail = null })
+    }
+    if (showConsumedDetail) {
+        ConsumedDayDetailSheet(
+            day = selectedDay,
+            isToday = isToday,
+            meals = meals,
+            supplements = supplements,
+            tailEntries = tailEntries,
+            onDismiss = { showConsumedDetail = false }
+        )
+    }
+    if (showAllPicks) {
+        AllSmartPicksSheet(
+            picks = state.allSmartPicks,
+            gaps = state.focusNow,
+            loading = state.loading,
+            onOpenPick = { smartPickDetail = it },
+            onDismiss = { showAllPicks = false }
+        )
     }
     if (showDatePicker) {
         val pickerState = rememberDatePickerState(
@@ -206,6 +227,8 @@ fun HomeScreen(
         }
 
         // ---- Consumed so far (selected day) --------------------------------
+        // Tappable (feedback 2026-09): the card is the brief summary; tapping
+        // it opens the full day sheet (meals + supplements + water + misc).
         item {
             ConsumedSummaryCard(
                 state = state,
@@ -213,7 +236,8 @@ fun HomeScreen(
                 waterL = WaterIntake.liters(tailEntries),
                 mealCount = meals.size,
                 supplementCount = supplements.size,
-                otherEntryCount = tailEntries.count { it.kind != WaterIntake.KIND_WATER }
+                otherEntryCount = tailEntries.count { it.kind != WaterIntake.KIND_WATER },
+                onClick = { showConsumedDetail = true }
             )
         }
         item {
@@ -225,12 +249,15 @@ fun HomeScreen(
         item { NutritionProcessingChip(nutritionState, unresolved, onRetry = vm::retryUnresolved) }
 
         // ---- Smart picks (feature C, TOP section) --------------------------
+        // "See all" (feedback 2026-09) opens the full deficiency-keyed list.
         item {
             SmartPicksSection(
                 picks = state.smartPicks,
+                allPicks = state.allSmartPicks,
                 cacheCold = state.smartPicksCacheCold,
                 loading = state.loading,
-                onOpenPick = { smartPickDetail = it }
+                onOpenPick = { smartPickDetail = it },
+                onSeeAll = { showAllPicks = true }
             )
         }
 
@@ -617,9 +644,14 @@ private fun ConsumedSummaryCard(
     waterL: Double,
     mealCount: Int,
     supplementCount: Int,
-    otherEntryCount: Int
+    otherEntryCount: Int,
+    onClick: () -> Unit
 ) {
-    Card(Modifier.fillMaxWidth()) {
+    Card(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+    ) {
         Column(Modifier.padding(16.dp)) {
             SectionHeader(
                 if (isToday) "Consumed so far today" else "Consumed that day",
@@ -686,6 +718,12 @@ private fun ConsumedSummaryCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Tap for everything consumed this day",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
             }
         }
     }

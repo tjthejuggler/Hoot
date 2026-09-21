@@ -55,6 +55,13 @@ data class HomeUiState(
     val unresolvedCount: Int = 0,
     /** Feature C — "Smart picks for you": multi-nutrient food matches. */
     val smartPicks: List<SmartFoodPick> = emptyList(),
+    /**
+     * Full candidate ranking (feedback 2026-09 "see all"): the same matcher
+     * without the Home cap — every food that covers ≥1 current gap, worst
+     * first. Shown in [AllSmartPicksSheet]; [smartPicks] stays the curated
+     * top slice for the dashboard.
+     */
+    val allSmartPicks: List<SmartFoodPick> = emptyList(),
     /** True when focus gaps exist but the cache is too cold to pick from. */
     val smartPicksCacheCold: Boolean = false
 )
@@ -173,6 +180,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                     sparkline = _sparkValues(),
                     unresolvedCount = _unresolved.value,
                     smartPicks = smartResult?.picks ?: emptyList(),
+                    allSmartPicks = smartResult?.allPicks ?: emptyList(),
                     smartPicksCacheCold = focus.isNotEmpty() &&
                         (smartResult == null || smartResult.cacheCandidates <
                             com.example.hoot.domain.insights.SmartFoodProvider.MIN_CANDIDATES)
