@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Signature permission declared by the Tail habit tracker (same keystore);
+         needed to query its habits ContentProvider in later phases. -->
+    <uses-permission android:name="com.example.tail.permission.TAIL_INTEGRATION" />
+
+    <!-- Android 11+ package visibility: allow querying the Tail app and its
+         ContentProvider (content resolver queries in later phases). -->
+    <queries>
+        <package android:name="com.example.tail" />
+        <provider android:authorities="com.example.tail.provider" />
+    </queries>
+
+    <application
+        android:name=".HootApp"
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Hoot">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:theme="@style/Theme.Hoot"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Intake camera flow: full-res shots are written by the (external)
+             camera app into files/intake_images/ through this provider —
+             Hoot itself needs no CAMERA runtime permission. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+        <!-- Tail push-broadcast hook (protocol v5 pattern; actions per
+             docs/TAIL_REQUEST.md R4). exported=true is required for a
+             manifest-declared receiver to receive explicit package-targeted
+             broadcasts from another app, but ONLY same-keystore apps hold
+             com.example.tail.permission.TAIL_INTEGRATION, so the permission
+             attribute gates delivery to Tail exactly as Inuit's
+             sendBroadcast(intent, PERMISSION_TAIL) gates its send side. -->
+        <receiver
+            android:name=".data.tail.TailSyncReceiver"
+            android:exported="true"
+            android:permission="com.example.tail.permission.TAIL_INTEGRATION">
+            <intent-filter>
+                <action android:name="com.example.tail.ACTION_ENTRY_ADDED" />
+                <action android:name="com.example.tail.ACTION_INCREMENT_HABIT" />
+                <action android:name="com.example.tail.ACTION_SET_HABIT_VALUES" />
+            </intent-filter>
+        </receiver>
+    </application>
+
+</manifest>

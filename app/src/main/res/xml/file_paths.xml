@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Shareable paths for the Intake camera flow: full-res shots land in
+     files/intake_images/ and are handed to the camera app via FileProvider
+     (no CAMERA permission needed in Hoot itself). -->
+<paths>
+    <files-path name="intake_images" path="intake_images/" />
+</paths>
