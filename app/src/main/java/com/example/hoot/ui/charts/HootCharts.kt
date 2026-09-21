@@ -7,6 +7,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.Modifier
@@ -22,8 +23,10 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlin.math.min
+import kotlin.math.roundToInt
 
 /**
  * Custom Compose-Canvas charts (docs/ARCHITECTURE.md §7) — Inuit's
@@ -48,12 +51,18 @@ private fun animateChart(target: Float): Float =
     ).value
 
 /** Chart content rect inside a DrawScope (padding + gridlines). */
-private fun DrawScope.gridRect(gridLineColor: Color): Rect {
+private fun DrawScope.gridRect(
+    gridLineColor: Color,
+    extraLeft: Dp = 0.dp,
+    extraBottom: Dp = 0.dp
+): Rect {
     val padH = 6.dp.toPx()
     val padV = 8.dp.toPx()
+    val left = padH + extraLeft.toPx()
     val rect = Rect(
-        left = padH, top = padV,
-        right = size.width - padH, bottom = size.height - padV
+        left = left, top = padV,
+        right = (size.width - padH).coerceAtLeast(left + 1f),
+        bottom = (size.height - padV - extraBottom.toPx()).coerceAtLeast(padV + 1f)
     )
     for (i in 1..2) {
         val y = rect.top + rect.height * i / 3f
@@ -77,6 +86,9 @@ fun LineChart(
     barValues: List<Double?>? = null,
     barColor: Color = lineColor.copy(alpha = 0.25f),
     yMaxOverride: Double? = null,
+    axisLabels: Boolean = false,
+    xLabels: List<String> = emptyList(),
+    yLabelFormat: (Double) -> String = { "%.4g".format(it) },
     contentDescriptionText: String = "Line chart"
 ) {
     val anim = animateChart(1f)
@@ -91,12 +103,38 @@ fun LineChart(
         }
         if (referenceLabel.isNotBlank()) append(". Reference: $referenceLabel")
     }
+    val textMeasurer = rememberTextMeasurer()
+    val labelStyle = MaterialTheme.typography.labelSmall
+    val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
     Canvas(
         modifier = modifier.semantics { contentDescription = desc }
     ) {
-        val chart = gridRect(gridColor)
+        val chart = gridRect(
+            gridColor,
+            extraLeft = if (axisLabels) 34.dp else 0.dp,
+            extraBottom = if (axisLabels) 16.dp else 0.dp
+        )
         val yToPx = { v: Double ->
             chart.bottom - (v.coerceAtLeast(0.0) / yMax * chart.height).toFloat()
+        }
+
+        // Y-axis tick labels (0 / midpoint / max) — charts were previously
+        // unlabeled, making intake-vs-target unreadable at a glance.
+        if (axisLabels) {
+            listOf(0.0, yMax / 2.0, yMax).forEach { v ->
+                val measured = textMeasurer.measure(
+                    AnnotatedString(yLabelFormat(v)), style = labelStyle
+                )
+                drawText(
+                    measured, color = labelColor,
+                    topLeft = Offset(
+                        0f,
+                        (yToPx(v) - measured.size.height / 2f).coerceIn(
+                            0f, (size.height - measured.size.height).coerceAtLeast(0f)
+                        )
+                    )
+                )
+            }
         }
 
         // Optional bar underlay.
@@ -116,7 +154,7 @@ fun LineChart(
             }
         }
 
-        // Reference line (dashed).
+        // Reference line (dashed) + on-chart target label.
         referenceLine?.let { ref ->
             if (ref in 0.0..yMax) {
                 val y = yToPx(ref)
@@ -127,6 +165,18 @@ fun LineChart(
                     strokeWidth = 1.5.dp.toPx(),
                     pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 8f))
                 )
+                if (referenceLabel.isNotBlank()) {
+                    val measured = textMeasurer.measure(
+                        AnnotatedString(referenceLabel), style = labelStyle
+                    )
+                    drawText(
+                        measured, color = referenceColor,
+                        topLeft = Offset(
+                            (chart.right - measured.size.width).coerceAtLeast(0f),
+                            (y - measured.size.height - 2.dp.toPx()).coerceAtLeast(0f)
+                        )
+                    )
+                }
             }
         }
 
@@ -155,8 +205,33 @@ fun LineChart(
                 drawCircle(lineColor, radius = 3.dp.toPx(), center = p)
             }
         }
+
+        // X-axis tick labels: ≤5 evenly spaced (ends included).
+        if (axisLabels && xLabels.size == points.size && points.isNotEmpty()) {
+            xTickIndices(points.size).forEach { i ->
+                val x = if (points.size <= 1) chart.center.x
+                else chart.left + chart.width * i / (points.size - 1).toFloat()
+                val measured = textMeasurer.measure(AnnotatedString(xLabels[i]), style = labelStyle)
+                drawText(
+                    measured, color = labelColor,
+                    topLeft = Offset(
+                        (x - measured.size.width / 2f).coerceIn(
+                            0f, (size.width - measured.size.width).coerceAtLeast(0f)
+                        ),
+                        chart.bottom + 4.dp.toPx()
+                    )
+                )
+            }
+        }
     }
 }
+
+/** Evenly spaced tick indices for [n] points (ends included, at most [maxTicks]). */
+private fun xTickIndices(n: Int, maxTicks: Int = 5): List<Int> =
+    if (n <= maxTicks) (0 until n).toList()
+    else (0 until maxTicks)
+        .map { (it.toDouble() * (n - 1) / (maxTicks - 1)).roundToInt() }
+        .distinct()
 
 /**
  * Vertical bar chart (weekly score aggregates etc.). Negative / null = gap.

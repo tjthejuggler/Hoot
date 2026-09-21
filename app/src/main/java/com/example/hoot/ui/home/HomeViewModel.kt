@@ -20,6 +20,7 @@ import com.example.hoot.domain.score.ScoreComponent
 import com.example.hoot.domain.score.ScoreStatus
 import com.example.hoot.ui.common.LIMIT_TRACKER_IDS
 import com.example.hoot.ui.common.dayKeyMinusDays
+import com.example.hoot.ui.common.dayKeyPlusDays
 import com.example.hoot.ui.common.effectiveTarget
 import com.example.hoot.ui.common.todayKey
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -68,15 +69,20 @@ data class HomeUiState(
 class HomeViewModel(app: Application) : AndroidViewModel(app) {
 
     private val graph = app.appGraph
-    private val day = todayKey()
+    private val today = todayKey()
+
+    /** Selected day key ("yyyy-MM-dd") — header arrows / date picker navigate this. */
+    private val _day = MutableStateFlow(todayKey())
+    val day: StateFlow<String> = _day.asStateFlow()
 
     private val _insights = MutableStateFlow<List<Insight>>(emptyList())
     private val _unresolved = MutableStateFlow(0)
 
-    val state: StateFlow<HomeUiState> =
-        graph.nutrients.observeDailyTotals(day)
-            .distinctUntilChanged()
-            .flatMapLatest { totals ->
+    val state: StateFlow<HomeUiState> = _day
+        .flatMapLatest { day ->
+            graph.nutrients.observeDailyTotals(day)
+                .distinctUntilChanged()
+                .flatMapLatest { totals ->
                 // Ledger changed → refresh the (idempotent) score snapshot.
                 if (totals.isNotEmpty()) {
                     runCatching { graph.scoreSnapshotter.recomputeDay(day) }
@@ -173,20 +179,24 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                 )
                 kotlinx.coroutines.flow.flowOf(ui)
             }
-            .stateIn(viewModelScope, SharingStarted.Eagerly, HomeUiState(day = day, loading = true))
+        }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, HomeUiState(day = todayKey(), loading = true))
 
-    /** Meals + supplements logged today (reactive). */
-    val meals: StateFlow<List<MealEntity>> = graph.meals.observeByDay(day)
+    /** Meals + supplements logged on the selected day (reactive). */
+    val meals: StateFlow<List<MealEntity>> = _day
+        .flatMapLatest { graph.meals.observeByDay(it) }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
-    val supplements: StateFlow<List<SupplementEntity>> = graph.meals.observeSupplementsByDay(day)
+    val supplements: StateFlow<List<SupplementEntity>> = _day
+        .flatMapLatest { graph.meals.observeSupplementsByDay(it) }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     /**
      * Tail water/misc habit entries logged today (v5) — minimal display rows
      * in Home's "today" list; no analytics yet.
      */
-    val tailEntries: StateFlow<List<TailEntryEntity>> = graph.tailEntries.observeByDay(day)
+    val tailEntries: StateFlow<List<TailEntryEntity>> = _day
+        .flatMapLatest { graph.tailEntries.observeByDay(it) }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     /** Unresolved items awaiting nutrition resolution (retry chip). */
@@ -194,7 +204,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         viewModelScope.launch {
-            graph.nutrients.observeDailyTotalsRange(dayKeyMinusDays(day, 6), day)
+            graph.nutrients.observeDailyTotalsRange(dayKeyMinusDays(today, 6), today)
                 .collect { refreshInsights() }
         }
         // Diet changes must RE-RUN the analysis (diet-fix hardening,
@@ -232,14 +242,14 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun refreshInsights() {
         val defs = graph.nutrients.definitionsAll()
-        val perDay = graph.nutrients.observeDailyTotalsRange(dayKeyMinusDays(day, 6), day).first()
+        val perDay = graph.nutrients.observeDailyTotalsRange(dayKeyMinusDays(today, 6), today).first()
         val intakeByDay = perDay.associate { (it.nutrientId to (it.day ?: "")) to it.total }
-        val snapshots = graph.nutrients.observeScoreHistory(dayKeyMinusDays(day, 13)).first()
-        val current = snapshots.filter { it.day >= dayKeyMinusDays(day, 6) }
-        val previous = snapshots.filter { it.day < dayKeyMinusDays(day, 6) }
+        val snapshots = graph.nutrients.observeScoreHistory(dayKeyMinusDays(today, 13)).first()
+        val current = snapshots.filter { it.day >= dayKeyMinusDays(today, 6) }
+        val previous = snapshots.filter { it.day < dayKeyMinusDays(today, 6) }
         val dietFilter = _dietFilter
         val window = WindowData(
-            from = dayKeyMinusDays(day, 6), to = day,
+            from = dayKeyMinusDays(today, 6), to = today,
             intakeByDay = intakeByDay,
             definitions = defs.associate {
                 it.id to NutrientInsightDef(
@@ -273,8 +283,31 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     }.getOrDefault(emptyList())
 
     private suspend fun _sparkValues(): List<Double> =
-        graph.nutrients.observeScoreHistory(dayKeyMinusDays(day, 6)).first()
+        graph.nutrients.observeScoreHistory(dayKeyMinusDays(today, 6)).first()
             .sortedBy { it.day }.map { it.score }
+
+    // ---- Day navigation (Home header arrows + date picker) ----------------
+
+    /** Step the dashboard back one calendar day. */
+    fun goBackDay() {
+        _day.value = dayKeyMinusDays(_day.value, 1)
+    }
+
+    /** Step forward one day — never beyond today (no future logging). */
+    fun goForwardDay() {
+        val next = dayKeyPlusDays(_day.value, 1)
+        if (next <= today) _day.value = next
+    }
+
+    /** Jump to an arbitrary day (date picker); future days are ignored. */
+    fun selectDay(key: String) {
+        if (key.isNotBlank() && key <= today) _day.value = key
+    }
+
+    /** Return the dashboard to today. */
+    fun jumpToToday() {
+        _day.value = today
+    }
 
     /** Retry affordance: resets failure counters and re-resolves + re-aggregates. */
     fun retryUnresolved() = graph.nutritionProcessor.retryAll()

@@ -22,17 +22,22 @@ import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.HelpOutline
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Restaurant
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Card
 import androidx.compose.material3.Icon
+import androidx.compose.material3.DatePicker
+import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -48,6 +53,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.hoot.appGraph
 import com.example.hoot.domain.insights.Insight
 import com.example.hoot.domain.insights.InsightSeverity
+import com.example.hoot.domain.nutrition.WaterIntake
 import com.example.hoot.domain.score.ScoreStatus
 import com.example.hoot.ui.charts.ProgressRing
 import com.example.hoot.ui.charts.Sparkline
@@ -59,8 +65,11 @@ import com.example.hoot.ui.common.NutrientProgressRow
 import com.example.hoot.ui.common.ScoreExplainerSheet
 import com.example.hoot.ui.common.SectionHeader
 import com.example.hoot.ui.common.TierChip
+import com.example.hoot.ui.common.dayKeyToDatePickerMillis
+import com.example.hoot.ui.common.datePickerMillisToDayKey
 import com.example.hoot.ui.common.formatNutrient
 import com.example.hoot.ui.common.prettyDay
+import com.example.hoot.ui.common.todayKey
 import com.example.hoot.ui.tail.TailSyncBanner
 import com.example.hoot.ui.theme.ScoreHigh
 import com.example.hoot.ui.theme.ScoreLow
@@ -97,6 +106,11 @@ fun HomeScreen(
     var detailNutrientId by remember { mutableStateOf<String?>(null) }
     var tiersExpanded by remember { mutableStateOf(false) }
     var smartPickDetail by remember { mutableStateOf<com.example.hoot.domain.insights.SmartFoodPick?>(null) }
+    var showDatePicker by remember { mutableStateOf(false) }
+
+    // Selected dashboard day (header arrows / date picker navigate it).
+    val selectedDay by vm.day.collectAsStateWithLifecycle()
+    val isToday = selectedDay == todayKey()
 
     if (showScoreExplainer) {
         ScoreExplainerSheet(snapshot = state.score, onDismiss = { showScoreExplainer = false })
@@ -108,30 +122,99 @@ fun HomeScreen(
     smartPickDetail?.let { pick ->
         SmartPickDetailSheet(pick = pick, onDismiss = { smartPickDetail = null })
     }
+    if (showDatePicker) {
+        val pickerState = rememberDatePickerState(
+            initialSelectedDateMillis = dayKeyToDatePickerMillis(selectedDay).takeIf { it > 0 }
+        )
+        DatePickerDialog(
+            onDismissRequest = { showDatePicker = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    pickerState.selectedDateMillis?.let {
+                        vm.selectDay(datePickerMillisToDayKey(it))
+                    }
+                    showDatePicker = false
+                }) { Text("OK") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDatePicker = false }) { Text("Cancel") }
+            }
+        ) {
+            DatePicker(state = pickerState)
+        }
+    }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 96.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // ---- Header + refresh -------------------------------------------
+        // ---- Header: day navigation + refresh ----------------------------
         item {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("Home", style = MaterialTheme.typography.headlineSmall)
-                    Text(
-                        prettyDay(state.day),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+            Column {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = vm::goBackDay) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Previous day"
+                        )
+                    }
+                    Column(
+                        Modifier.weight(1f),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text("Home", style = MaterialTheme.typography.headlineSmall)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.clickable(onClick = { showDatePicker = true })
+                        ) {
+                            Text(
+                                prettyDay(selectedDay),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Icon(
+                                Icons.Filled.ExpandMore,
+                                contentDescription = "Pick a date",
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                    IconButton(onClick = vm::goForwardDay, enabled = !isToday) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowForward,
+                            contentDescription = "Next day"
+                        )
+                    }
+                    IconButton(onClick = vm::retryUnresolved) {
+                        Icon(Icons.Filled.Refresh, contentDescription = "Refresh analysis")
+                    }
                 }
-                IconButton(onClick = vm::retryUnresolved) {
-                    Icon(Icons.Filled.Refresh, contentDescription = "Refresh analysis")
+                if (!isToday) {
+                    TextButton(
+                        onClick = vm::jumpToToday,
+                        modifier = Modifier.align(Alignment.CenterHorizontally)
+                    ) {
+                        Text("Viewing a past day — jump back to today")
+                    }
                 }
             }
         }
         item {
             if (state.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+        }
+
+        // ---- Consumed so far (selected day) --------------------------------
+        item {
+            ConsumedSummaryCard(
+                state = state,
+                isToday = isToday,
+                waterL = WaterIntake.liters(tailEntries),
+                mealCount = meals.size,
+                supplementCount = supplements.size,
+                otherEntryCount = tailEntries.count { it.kind != WaterIntake.KIND_WATER }
+            )
         }
         item {
             TailSyncBanner(
@@ -520,6 +603,88 @@ private fun CaloriesCard(state: HomeUiState) {
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+                }
+            }
+        }
+    }
+}
+
+/** "Consumed so far" summary: energy, macros, water and entry counts. */
+@Composable
+private fun ConsumedSummaryCard(
+    state: HomeUiState,
+    isToday: Boolean,
+    waterL: Double,
+    mealCount: Int,
+    supplementCount: Int,
+    otherEntryCount: Int
+) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp)) {
+            SectionHeader(
+                if (isToday) "Consumed so far today" else "Consumed that day",
+                prettyDay(state.day)
+            )
+            Spacer(Modifier.height(8.dp))
+            val nothing = state.calories == null &&
+                state.macros.all { it.intake <= 0.0 } && waterL <= 0.0 &&
+                mealCount == 0 && supplementCount == 0 && otherEntryCount == 0
+            if (nothing) {
+                Text(
+                    "Nothing logged for this day yet — use “+ Add”.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            state.calories
+                                ?.let { (kcal, unit) -> formatNutrient(kcal, unit) } ?: "0 kcal",
+                            style = MaterialTheme.typography.headlineSmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            "Energy",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    state.macros.forEach { m ->
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.padding(start = 12.dp)
+                        ) {
+                            Text(formatNutrient(m.intake, m.unit), style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                m.name,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+                if (waterL > 0) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "💧 ${formatNutrient(waterL, "L")} water",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                val parts = buildList {
+                    if (mealCount > 0) add("$mealCount meal${if (mealCount == 1) "" else "s"}")
+                    if (supplementCount > 0) {
+                        add("$supplementCount supplement${if (supplementCount == 1) "" else "s"}")
+                    }
+                    if (otherEntryCount > 0) add("$otherEntryCount other entries")
+                }
+                if (parts.isNotEmpty()) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        parts.joinToString(" · "),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
         }

@@ -48,6 +48,7 @@ import com.example.hoot.data.local.entity.NutrientDefinitionEntity
 import com.example.hoot.ui.charts.LineChart
 import com.example.hoot.ui.common.formatNutrient
 import com.example.hoot.ui.common.foodEmoji
+import com.example.hoot.ui.common.shortDayLabel
 import com.example.hoot.ui.common.percentOf
 import com.example.hoot.ui.common.prettyDay
 
@@ -151,8 +152,34 @@ private fun NutrientTab(
                             referenceLine = target.takeIf { it > 0 },
                             referenceLabel = "target ${formatNutrient(target, def.unit)}",
                             referenceColor = MaterialTheme.colorScheme.tertiary,
+                            axisLabels = true,
+                            xLabels = state.series.map { shortDayLabel(it.day) },
                             contentDescriptionText = "${def.name} intake history"
                         )
+                        Spacer(Modifier.height(8.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                Modifier
+                                    .size(8.dp)
+                                    .background(MaterialTheme.colorScheme.primary, CircleShape)
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text("Daily intake", style = MaterialTheme.typography.labelSmall)
+                            Spacer(Modifier.width(12.dp))
+                            Box(
+                                Modifier
+                                    .width(16.dp)
+                                    .height(2.dp)
+                                    .background(MaterialTheme.colorScheme.tertiary)
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text(
+                                if (target > 0) {
+                                    "Target ${formatNutrient(target, def.unit)}/day"
+                                } else "No daily target",
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        }
                     }
                 }
             }

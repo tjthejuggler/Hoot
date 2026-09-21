@@ -113,3 +113,17 @@ fun effectiveTarget(def: NutrientDefinitionEntity, goalTarget: Double?): Double 
     if (def.id in LIMIT_TRACKER_IDS) return goalTarget ?: def.ulValue ?: def.rdaValue ?: 0.0
     return goalTarget ?: def.rdaValue ?: 0.0
 }
+
+/** "2026-09-15" → "9/15" — compact chart axis tick. */
+fun shortDayLabel(day: String): String = runCatching {
+    LocalDate.parse(day).let { "${it.monthValue}/${it.dayOfMonth}" }
+}.getOrElse { day.takeLast(5) }
+
+/** Compose [androidx.compose.material3.DatePicker] millis (UTC midnight) → day key. */
+fun datePickerMillisToDayKey(utcMillis: Long): String =
+    DayKeys.fromEpoch(utcMillis, ZoneId.of("UTC"))
+
+/** Day key → [androidx.compose.material3.DatePicker] millis (UTC midnight of that date). */
+fun dayKeyToDatePickerMillis(day: String): Long = runCatching {
+    LocalDate.parse(day).atStartOfDay(ZoneId.of("UTC")).toInstant().toEpochMilli()
+}.getOrDefault(0L)

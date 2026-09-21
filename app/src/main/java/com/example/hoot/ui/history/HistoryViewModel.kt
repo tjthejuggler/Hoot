@@ -136,16 +136,32 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun loadDetail(def: NutrientDefinitionEntity, win: HistoryWindow) {
         val goal = graph.nutrients.goal(def.id)
         val target = com.example.hoot.ui.common.effectiveTarget(def, goal?.targetValue)
-        val from = win.days?.let { dayKeyMinusDays(today, it - 1) } ?: "1970-01-01"
         val to = today
 
         // Reactive series would fight the manual loader; this is a snapshot read.
-        val perDay = graph.nutrients.dailyTotalsForWindow(from, to)
+        val perDay = graph.nutrients.dailyTotalsForWindow(
+            win.days?.let { dayKeyMinusDays(to, it - 1) } ?: "1970-01-01", to
+        )
         val byDay = perDay.filter { it.nutrientId == def.id }
             .associate { (it.day ?: "") to it.total }
 
-        val days = byDay.keys.filter { it.isNotBlank() }.sorted()
-        val series = days.map { DayPoint(it, byDay[it] ?: 0.0, target) }
+        // Zero-fill every calendar day of the window (bug fix: previously only
+        // days WITH logged intake became points, so 30d rendered as few points
+        // as 7d whenever few days had data, and the x-axis lost all meaning).
+        val from = win.days?.let { dayKeyMinusDays(to, it - 1) }
+            ?: byDay.keys.filter { it.isNotBlank() }.minOrNull() // "All" → since first data
+        val series: List<DayPoint> = if (from == null) {
+            emptyList()
+        } else {
+            val days = ArrayList<String>()
+            var cursor = java.time.LocalDate.parse(from)
+            val end = java.time.LocalDate.parse(to)
+            while (!cursor.isAfter(end)) {
+                days.add(cursor.toString())
+                cursor = cursor.plusDays(1)
+            }
+            days.map { key -> DayPoint(key, byDay[key] ?: 0.0, target) }
+        }
         _series.value = series
 
         // Stats header: avg, % days meeting, trend (2nd half vs 1st half).
@@ -165,7 +181,7 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
         // Top food contributors: meal contributions split across the meal's
         // resolved ingredients (per-ingredient nutrient shares are not stored,
         // so an even split within the meal is the honest approximation).
-        val contribs = graph.nutrients.mealContributions(def.id, from, to)
+        val contribs = graph.nutrients.mealContributions(def.id, from ?: "1970-01-01", to)
         val byFood = HashMap<String, Double>()
         val meals = graph.meals.mealsByIds(contribs.map { it.mealId }).associateBy { it.id }
         for (c in contribs) {
