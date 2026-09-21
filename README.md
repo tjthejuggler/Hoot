@@ -135,6 +135,36 @@ for no breaking changes to the existing v1 surface.
 
 ## Changelog
 
+### 2026-09-21 — Seed LUT: bundled USDA panels replace most ingredient LLM calls
+
+Full audit: [`docs/LLM_AUDIT.md`](docs/LLM_AUDIT.md). Resolution pipeline is
+now **cache → seed → LLM → web**:
+
+- **Bundled seed LUT** ([`SeedFoodLibrary`](app/src/main/java/com/example/hoot/domain/nutrition/SeedFoodLibrary.kt)):
+  ~65 commonly logged whole foods with USDA SR Legacy-derived per-100 g
+  panels in canonical nutrient ids/units, plus a phrase-alias table ("ground
+  beef" → "beef", "spaghetti" → "pasta", …). Pure JVM, deterministic,
+  integrity-tested ([`SeedFoodLibraryTest`](app/src/test/java/com/example/hoot/domain/nutrition/SeedFoodLibraryTest.kt):
+  key stability under `FoodNormalizer`, canonical ids, macro/kcal sanity).
+- **Resolver integration** ([`NutritionResolver`](app/src/main/java/com/example/hoot/domain/nutrition/NutritionResolver.kt)):
+  seed tier (a2) sits between LookupCache and the LLM panel in the single,
+  batch, and single-food-fallback paths. Seed hits persist through the normal
+  Food + Profile + LookupCache + Sources path with `resolutionMethod = "seed"`
+  and a `seed://usda-sr-legacy` source record — later runs are plain cache
+  hits. The drain's batch phase persists seed panels BEFORE any LLM call, so
+  LUT-covered foods cost zero model spend; batch LLM calls now send only
+  LUT-uncovered keys.
+- **Smart picks without LLM** ([`SmartFoodProvider`](app/src/main/java/com/example/hoot/domain/insights/SmartFoodProvider.kt)):
+  the thin-cache LLM enhancement batch is gone; a thin cache is topped up
+  from the seed LUT deterministically (diet filter still applies in the
+  matcher). Works with no LLM configured at all.
+- **Cheaper batch retries**: batch panel calls no longer route through
+  `completeJson`'s full-batch re-ask on a malformed reply — one tolerant
+  `chat` + tolerant parse salvages the keys that parsed, and the existing
+  per-key single-food fallback re-asks only what's missing.
+- LLM remains for photo/text meal capture, supplements, branded/composite
+  foods, the web tier, coach notes, and recommendations — untouched.
+
 ### 2026-09-20 — Integration-verification fixes (follow-ups to batches A–C)
 
 - **Tail setup remembers the saved mapping** — re-entering setup preselects the

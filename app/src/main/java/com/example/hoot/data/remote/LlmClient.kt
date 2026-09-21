@@ -104,6 +104,12 @@ class LlmClient {
      * Requests strict JSON output and extracts the first balanced JSON
      * object/array from the reply. One stricter retry follows a parse
      * failure (ARCHITECTURE.md §10), then the error propagates.
+     *
+     * Note (LLM_AUDIT 2026-09): single-shot callers that parse tolerantly
+     * (batch panels → [com.example.hoot.domain.nutrition.NutritionPrompts]
+     * `.parsePanelBatch`) should prefer [chat] + their own parser — a
+     * truncated batch reply then still yields its parseable keys instead of
+     * triggering this full-batch re-ask and losing everything.
      */
     suspend fun completeJson(
         cfg: LlmConfig,

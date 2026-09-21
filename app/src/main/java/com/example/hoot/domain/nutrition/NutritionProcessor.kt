@@ -318,22 +318,38 @@ class NutritionProcessor(
     }
 
     /**
-     * ONE batched LLM call for up to [batchSize] foods → persist each parsed
-     * panel once → bulk-apply to every row of the key. Foods missing from the
-     * reply (parse failure / dropped) get ONE single-food fallback call
-     * (LLM + confidence-gated web escalation); failing both marks the group's
-     * rows failed (attempt-cap bookkeeping, unchanged semantics).
+     * SEED-first batch resolution: bundled LUT panels persist with zero LLM
+     * spend; the remainder goes out as ONE batched LLM call → persist each
+     * parsed panel once → bulk-apply to every row of the key. Foods missing
+     * from the reply (parse failure / dropped / seed-covered) get ONE
+     * single-food fallback (seed check + LLM + confidence-gated web
+     * escalation); failing both marks the group's rows failed (attempt-cap
+     * bookkeeping, unchanged semantics).
      */
     private suspend fun resolveFoodBatch(
         groups: List<FoodGrouper.FoodGroup>,
         progress: Progress,
         rateGuard: LlmRateGuard
     ) {
+        // (a2) bundled seed LUT — resolves whole common foods for free.
+        val seedPanels = resolver.seedPanelsFor(groups.map { it.foodKey to it.displayName })
+        val llmGroups = mutableListOf<FoodGrouper.FoodGroup>()
+        for (group in groups) {
+            val seedPanel = seedPanels[group.foodKey]
+            if (seedPanel != null && resolver.persistFoodPanel(group.foodKey, group.displayName, seedPanel)) {
+                val ok = applyFoodPanel(group)
+                progress.finish(ok, group.displayName, group.touchedDays)
+                if (!ok) llmGroups += group
+            } else {
+                llmGroups += group
+            }
+        }
+        if (llmGroups.isEmpty()) return
         val panels = resolver.resolveFoodsBatch(
-            groups.map { it.foodKey to it.displayName }, rateGuard
+            llmGroups.map { it.foodKey to it.displayName }, rateGuard
         )
         val missing = mutableListOf<FoodGrouper.FoodGroup>()
-        for (group in groups) {
+        for (group in llmGroups) {
             val panel = panels[group.foodKey]
             val ok = panel != null && resolver.persistFoodPanel(group.foodKey, group.displayName, panel) &&
                 applyFoodPanel(group)

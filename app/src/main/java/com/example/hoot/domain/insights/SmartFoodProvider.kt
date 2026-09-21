@@ -1,13 +1,11 @@
 package com.example.hoot.domain.insights
 
 import android.util.Log
-import com.example.hoot.data.local.AppSettings
 import com.example.hoot.data.local.SettingsRepository
 import com.example.hoot.data.local.entity.FoodNutrientProfileEntity
-import com.example.hoot.data.remote.LlmClient
-import com.example.hoot.data.remote.LlmConfig
 import com.example.hoot.data.repository.NutrientRepository
 import com.example.hoot.data.repository.TailConfigRepository
+import com.example.hoot.domain.nutrition.SeedFoodLibrary
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -17,16 +15,17 @@ import org.json.JSONObject
  * averages, pulls candidate foods with resolved per-100 g profiles from the
  * local cache, and returns matcher output.
  *
- * Cache cold-start (< [MIN_CANDIDATES] resolved foods): returns an empty
- * list — the Home section shows the "builds up as Hoot learns your foods"
- * empty state. The optional LLM enhancement is ONE batched call, only when
- * configured AND the cache is thin; failures are silent (cache-only result).
+ * Cache cold-start (< [MIN_CANDIDATES] resolved foods): the bundled
+ * [SeedFoodLibrary] LUT tops the candidate pool up deterministically — ZERO
+ * LLM calls (audit 2026-09, docs/LLM_AUDIT.md §6.3: the old thin-cache LLM
+ * enhancement batch is gone; the seed keeps the section useful from the
+ * first launch and never violates the diet filter, which
+ * [SmartFoodMatcher.match] applies to every candidate).
  */
 class SmartFoodProvider(
     private val nutrients: NutrientRepository,
     private val tailConfig: TailConfigRepository,
-    private val settings: SettingsRepository,
-    private val llm: LlmClient
+    private val settings: SettingsRepository
 ) {
 
     companion object {
@@ -37,9 +36,6 @@ class SmartFoodProvider(
 
         /** Max picks shown in the Home strip. */
         const val MAX_PICKS = 6
-
-        /** LLM asks for this many foods when enhancing a thin cache. */
-        private const val LLM_ASK_COUNT = 6
     }
 
     /** Outcome of one refresh — surfaced for logging/tests. */
@@ -150,34 +146,24 @@ class SmartFoodProvider(
 
         val candidates = cacheCandidates()
         var picks = SmartFoodMatcher.match(smartGaps, excesses, candidates, dietFilter, MAX_PICKS)
-        var llmUsed = false
 
-        // ---- (d) Optional LLM enhancement (thin cache only) ------------------
+        // ---- (d) Seed top-up (thin cache, zero LLM) --------------------------
         if (candidates.size < MIN_CANDIDATES) {
-            val s = settings.current()
-            val cfg = LlmConfig(s.baseUrl, s.apiKey, s.model)
-            if (cfg.configured) {
-                val generated = runCatching {
-                    generateViaLlm(cfg, s, smartGaps, excesses, dietFilter)
-                }.onFailure {
-                    Log.w(TAG, "smart-picks LLM batch failed (silent): ${it.message}")
-                }.getOrDefault(emptyList())
-                if (generated.isNotEmpty()) {
-                    llmUsed = true
-                    // Generated foods enter the SAME scoring pipeline (per-100
-                    // panels are approximate — marked source=llm for the badge).
-                    val merged = candidates + generated
-                    picks = SmartFoodMatcher.match(smartGaps, excesses, merged, dietFilter, MAX_PICKS)
-                }
+            val seedTopUp = seedTopUp(candidates)
+            if (seedTopUp.isNotEmpty()) {
+                // Seed foods enter the SAME scoring pipeline (deterministic,
+                // diet-filtered by the matcher like every other candidate).
+                val merged = candidates + seedTopUp
+                picks = SmartFoodMatcher.match(smartGaps, excesses, merged, dietFilter, MAX_PICKS)
             }
         }
 
         Log.i(
             TAG,
             "smartPicks($day): gaps=${smartGaps.size} excess=${excesses.size} " +
-                "cache=${candidates.size} llm=$llmUsed picks=${picks.size}"
+                "cache=${candidates.size} seedTopUp=${candidates.size < MIN_CANDIDATES} picks=${picks.size}"
         )
-        return SmartPicksResult(picks, smartGaps.size, candidates.size, llmUsed)
+        return SmartPicksResult(picks, smartGaps.size, candidates.size, llmUsed = false)
             .also { memo(sig, it) }
     }
 
@@ -221,97 +207,26 @@ class SmartFoodProvider(
         return out
     }
 
-    // ---- Optional LLM batch -----------------------------------------------------
+    // ---- Seed top-up (thin cache) ------------------------------------------------
 
     /**
-     * ONE batched call: foods rich in the gaps, low in the excesses, diet
-     * respected. Parsed into [SmartCandidateFood]s with approximate per-100
-     * panels so they run through the same deterministic scorer.
+     * Bundled LUT foods the cache doesn't already cover, as scoring
+     * candidates. Deterministic; the matcher's diet filter applies to them
+     * like to every other candidate.
      */
-    private suspend fun generateViaLlm(
-        cfg: LlmConfig,
-        s: AppSettings,
-        gaps: List<SmartGap>,
-        excesses: List<SmartExcess>,
-        diet: SmartDietFilter
-    ): List<SmartCandidateFood> {
-        val ask = JSONObject()
-            .put(
-                "gaps",
-                JSONArray(gaps.map {
-                    JSONObject().put("nutrient_id", it.nutrientId)
-                        .put("name", it.name)
-                        .put("unit", it.unit)
-                })
-            )
-            .put(
-                "avoid_excess",
-                JSONArray(excesses.map {
-                    JSONObject().put("nutrient_id", it.nutrientId).put("name", it.name)
-                })
-            )
-            .put("diet_style", diet.dietStyle)
-            .put(
-                "avoid",
-                JSONArray().apply {
-                    diet.allergies.forEach { put(it) }
-                    diet.dislikes.forEach { put(it) }
-                }
-            )
-            .put("foods_needed", LLM_ASK_COUNT)
-        val raw = llm.completeJson(
-            cfg = cfg,
-            system = SYSTEM_PROMPT,
-            user = ask.toString(),
-            temperature = s.temperature * 0.5f,
-            maxTokens = 1_200,
-            disableThinking = s.disableThinking
-        )
-        return parseLlmFoods(raw, gaps.associate { it.nutrientId to it.unit })
-    }
-
-    private fun parseLlmFoods(
-        json: String,
-        gapUnits: Map<String, String>
-    ): List<SmartCandidateFood> {
-        val root = JSONObject(LlmClient.extractJson(json))
-        val arr = root.optJSONArray("foods") ?: return emptyList()
-        val out = ArrayList<SmartCandidateFood>()
-        for (i in 0 until arr.length()) {
-            val o = arr.optJSONObject(i) ?: continue
-            val name = o.optString("food").takeIf { it.isNotBlank() } ?: continue
-            val values = JSONObject()
-            val v = o.optJSONObject("per_100g") ?: continue
-            val keys = v.keys()
-            while (keys.hasNext()) {
-                val k = keys.next()
-                val amount = v.optDouble(k, Double.NaN)
-                if (!amount.isNaN() && amount > 0) values.put(k, amount)
+    private fun seedTopUp(existing: List<SmartCandidateFood>): List<SmartCandidateFood> {
+        val seenNames = existing.mapTo(HashSet()) { it.displayName.lowercase() }
+        return SeedFoodLibrary.foods.values
+            .filter { it.displayName.lowercase() !in seenNames }
+            .map { food ->
+                SmartCandidateFood(
+                    foodId = "seed:${food.key}",
+                    displayName = food.displayName,
+                    category = food.category,
+                    servingGrams = food.typicalServingGrams,
+                    per100 = food.per100
+                )
             }
-            if (values.length() == 0) continue
-            out += SmartCandidateFood(
-                foodId = "llm:${name.lowercase()}",
-                displayName = name,
-                category = o.optString("category").takeIf { it.isNotBlank() },
-                servingGrams = o.optDouble("serving_grams", Double.NaN)
-                    .takeIf { !it.isNaN() && it > 0 },
-                per100 = parseRawPer100(values),
-                emojiHint = null
-            )
-        }
-        return out
-    }
-
-    /** LLM values may be in mg/mcg per 100 g already — canonicalized upstream convention: values are used as-is (canonical units). */
-    private fun parseRawPer100(values: JSONObject): Map<String, Double> {
-        val out = HashMap<String, Double>()
-        val keys = values.keys()
-        while (keys.hasNext()) {
-            val k = keys.next()
-            val v = values.optDouble(k, Double.NaN)
-            if (!v.isNaN() && v > 0) out[k] = v
-        }
-        return out
     }
 
     private fun parseStringList(json: String?): List<String> {
@@ -323,19 +238,3 @@ class SmartFoodProvider(
     }
 }
 
-/**
- * Strict-JSON prompt for the smart-picks enhancement (mirror of
- * [com.example.hoot.domain.insights.RecommendationEngine]'s approach).
- * Diet restrictions are stated as HARD constraints (diet-fix 2026-09);
- * the deterministic [DietRules] filter still gates LLM output defensively.
- */
-private const val SYSTEM_PROMPT: String =
-    "You are Hoot's smart food matcher. Given nutrient gaps and excess warnings, reply with ONLY " +
-        "a JSON object {\"foods\":[{\"food\":\"...\",\"category\":\"vegetable\",\"serving_grams\":100," +
-        "\"per_100g\":{\"magnesium\":79,\"vitamin_b6\":0.3}}]}. Pick common whole foods that are HIGH in " +
-        "several gap nutrients AT ONCE and LOW in every avoid_excess nutrient. per_100g keys must be the " +
-        "given nutrient ids in canonical units (g for macronutrients, mg, mcg). " +
-        "diet_style and the avoid list are STRICT HARD CONSTRAINTS: STRICTLY EXCLUDE every food " +
-        "that violates them (e.g. for vegan: ALL meat, fish, seafood, eggs, dairy, honey — use " +
-        "legumes, tofu, tempeh, fortified plant foods instead). A food that violates the diet is " +
-        "useless — never output one."

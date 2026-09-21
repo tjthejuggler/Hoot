@@ -22,13 +22,21 @@ object NutritionPrompts {
     private fun panelNutrients(nutrients: List<NutrientRef>): List<NutrientRef> =
         nutrients.filter { it.id !in NutrientKeys.DERIVED_IDS }
 
-    /** Parsed LLM nutrition panel. */
+    /**
+     * Parsed nutrition panel (LLM reply, web extraction, or bundled seed LUT).
+     */
     data class FoodPanel(
         val displayName: String,
         val values: Map<String, Double>,     // nutrientId → per-100 g canonical amount
         val confidence: Double,              // 0-1
         val typicalServingGrams: Double?,    // per-piece/portion gram weight hint
-        val imageSearchTerm: String?
+        val imageSearchTerm: String?,
+        /**
+         * Provenance: "llm" (model panel, default), "seed" (bundled
+         * [SeedFoodLibrary] row), "web" (MCP web extraction). Drives the
+         * resolutionMethod + Source-record written by the resolver.
+         */
+        val origin: String = "llm"
     )
 
     private const val SYSTEM = """

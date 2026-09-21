@@ -21,10 +21,14 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Nutrition resolution engine (docs/ARCHITECTURE.md §5):
+ * Nutrition resolution engine (docs/ARCHITECTURE.md §5, seed tier added
+ * 2026-09 per docs/LLM_AUDIT.md):
  *
  *   ingredient/supplement text
  *     → (a) LookupCache (TTL) → expand cached profile to quantity
+ *     → (a2) Bundled seed LUT ([SeedFoodLibrary], ~65 common whole foods,
+ *         USDA-derived) — zero network, deterministic, persists like any
+ *         other resolution so later runs are plain cache hits
  *     → (b) LLM full per-100 g panel for ALL tracked nutrients
  *     → (c) low confidence / failure → MCP web-search + web-reader → LLM extract
  *     → (d) persist Food + Profile + LookupCache + SourceRecords (always)
@@ -81,6 +85,14 @@ class NutritionResolver(
             return@withContext ResolveOutcome.Resolved(method = "cache", foodKey = key)
         }
 
+        // (a2) Bundled seed LUT — a common whole food needs no model call.
+        val seedPanel = seedPanel(key)
+        if (seedPanel != null) {
+            persistResolution(key, parsed.displayName, seedPanel, "seed", emptyList(), "usda-seed", s)
+            finishIngredient(ingredient, key, parsed)
+            return@withContext ResolveOutcome.Resolved(method = "seed", foodKey = key)
+        }
+
         // (b) LLM direct panel
         val cfg = LlmConfig(s.baseUrl, s.apiKey, s.model)
         if (!cfg.configured) {
@@ -102,6 +114,8 @@ class NutritionResolver(
             finishIngredient(ingredient, key, parsed)
             return@withContext ResolveOutcome.Resolved(method = "llm", foodKey = key)
         }
+
+        // (a2 note): bundled seed LUT hit above short-circuits before (b).
 
         // (c) Web fallback (budgeted)
         if (!s.webSearchFallback) {
@@ -203,7 +217,11 @@ class NutritionResolver(
         items: List<Pair<String, String>>,   // foodKey → display name
         rateGuard: LlmRateGuard?
     ): Map<String, NutritionPrompts.FoodPanel> = withContext(Dispatchers.IO) {
-        if (items.isEmpty()) return@withContext emptyMap()
+        // Seed-tier pre-filter: bundled foods never enter the LLM batch (the
+        // processor persists them via [seedPanelsFor]; here they are dropped
+        // so a stale caller cannot burn call budget on LUT-covered keys).
+        val llmItems = items.filter { (key, _) -> seedPanel(key) == null }
+        if (llmItems.isEmpty()) return@withContext emptyMap()
         val s = settings.current()
         val cfg = LlmConfig(s.baseUrl, s.apiKey, s.model)
         if (!cfg.configured) return@withContext emptyMap()
@@ -211,20 +229,52 @@ class NutritionResolver(
         if (defs.isEmpty()) return@withContext emptyMap()
         rateGuard?.acquire()
         runCatching {
-            val json = llm.completeJson(
+            // Tolerant ONE-shot batch (LLM_AUDIT §6.1): completeJson's strict
+            // re-ask threw away a truncated reply wholesale; chat + tolerant
+            // parse salvages every key that parsed, and the caller's
+            // single-food fallback re-asks ONLY the missing keys.
+            val json = llm.chat(
                 cfg, SYSTEM_PROMPT.trimIndent(),
-                NutritionPrompts.foodPanelBatchUserPrompt(items, defs),
+                NutritionPrompts.foodPanelBatchUserPrompt(llmItems, defs),
                 temperature = 0.2f,
-                maxTokens = batchMaxTokens(items.size),
+                maxTokens = batchMaxTokens(llmItems.size),
                 // Reasoning tokens share the completion budget — a batch of
                 // panels must not compete with a chain-of-thought (finish=length).
                 disableThinking = true
             )
             NutritionPrompts.parsePanelBatch(
-                json, items.map { it.first }.toSet(), defs.associate { it.id to it.unit }.keys
+                json, llmItems.map { it.first }.toSet(), defs.associate { it.id to it.unit }.keys
             )
-        }.onFailure { Log.w(TAG, "batch LLM panel failed (${items.size} foods): ${it.message}") }
+        }.onFailure { Log.w(TAG, "batch LLM panel failed (${llmItems.size} foods): ${it.message}") }
             .getOrDefault(emptyMap())
+    }
+
+    /**
+     * Seed-tier bulk lookup: the [SeedFoodLibrary] panels for every requested
+     * key the LUT covers. The processor persists these through
+     * [persistFoodPanel] exactly like LLM batch replies — same Food + Profile
+     * + LookupCache + Sources path, `resolutionMethod = "seed"` — so seed
+     * foods become ordinary cache hits with zero LLM spend.
+     */
+    fun seedPanelsFor(
+        items: List<Pair<String, String>>
+    ): Map<String, NutritionPrompts.FoodPanel> = buildMap {
+        for ((key, displayName) in items) {
+            seedPanel(key)?.let { put(key, it.copy(displayName = displayName)) }
+        }
+    }
+
+    /** Bundled panel for one normalized key; null when the LUT doesn't cover it. */
+    private fun seedPanel(key: String): NutritionPrompts.FoodPanel? {
+        val seed = SeedFoodLibrary.lookup(key) ?: return null
+        return NutritionPrompts.FoodPanel(
+            displayName = seed.displayName,
+            values = seed.per100,
+            confidence = 0.95,
+            typicalServingGrams = seed.typicalServingGrams,
+            imageSearchTerm = seed.displayName.lowercase(),
+            origin = "seed"
+        )
     }
 
     /**
@@ -240,8 +290,12 @@ class NutritionResolver(
         val s = settings.current()
         if (nutrientRefs().isEmpty()) return@withContext false
         val cfg = LlmConfig(s.baseUrl, s.apiKey, s.model)
+        // Origin-aware provenance: bundled seed rows are USDA data, not model
+        // output — record them as "seed" with a usda-seed pseudo-source.
+        val method = if (panel.origin == "seed") "seed" else "llm"
+        val model = if (panel.origin == "seed") "usda-seed" else cfg.model.ifBlank { "batch" }
         runCatching {
-            persistResolution(key, displayName, panel, "llm", emptyList(), cfg.model.ifBlank { "batch" }, s)
+            persistResolution(key, displayName, panel, method, emptyList(), model, s)
             nutrients.cacheLookup(key) != null
         }.getOrDefault(false)
     }
@@ -261,6 +315,15 @@ class NutritionResolver(
         val s = settings.current()
         val defs = nutrientRefs()
         if (defs.isEmpty()) return@withContext ResolveOutcome.Failed("nutrient definitions not seeded yet")
+
+        // (a2) Seed LUT before the single-food LLM call — batch replies can
+        // drop keys; a covered key still resolves without any model call.
+        val seedPanel = seedPanel(key)
+        if (seedPanel != null) {
+            persistResolution(key, displayName, seedPanel, "seed", emptyList(), "usda-seed", s)
+            return@withContext ResolveOutcome.Resolved(method = "seed", foodKey = key)
+        }
+
         val cfg = LlmConfig(s.baseUrl, s.apiKey, s.model)
         if (!cfg.configured) return@withContext ResolveOutcome.NotConfigured
 
@@ -309,7 +372,8 @@ class NutritionResolver(
         if (defs.isEmpty()) return@withContext emptyMap()
         rateGuard?.acquire()
         runCatching {
-            val json = llm.completeJson(
+            // Tolerant ONE-shot batch — same rationale as resolveFoodsBatch.
+            val json = llm.chat(
                 cfg, SYSTEM_PROMPT.trimIndent(),
                 NutritionPrompts.supplementBatchUserPrompt(items, defs),
                 temperature = 0.2f,
@@ -581,6 +645,7 @@ class NutritionResolver(
         llmModel: String,
         s: com.example.hoot.data.local.AppSettings
     ) {
+        // (source-record shaping stays origin-aware below — see `sources` list)
         val food = ensureFood(key, panel.displayName.ifBlank { displayName }, imageTerm = panel.imageSearchTerm)
         val canonicalUnits = nutrients.unitMap()
         // Canonicalize LLM-reported amounts to canonical nutrient units. Ids
@@ -620,16 +685,26 @@ class NutritionResolver(
                 hitCount = existing?.hitCount ?: 0
             )
         )
-        // SourceRecords: LLM provenance + fetched URLs (always).
-        val sources = buildList {
-            add(
-                SourceEntity(
-                    id = UUID.randomUUID().toString(), lookupKey = key,
-                    url = "llm://chat-completions/$llmModel",
-                    title = "LLM panel ($llmModel)", publisher = llmModel,
-                    fetchedAt = System.currentTimeMillis(), toolName = null
-                )
+        // SourceRecords: provenance + fetched URLs (always). Bundled seed rows
+        // cite the USDA-derived LUT instead of an llm:// pseudo-URL.
+        val isSeed = panel.origin == "seed"
+        val primarySource = if (isSeed) {
+            SourceEntity(
+                id = UUID.randomUUID().toString(), lookupKey = key,
+                url = "seed://usda-sr-legacy",
+                title = "Bundled USDA SR Legacy seed (Hoot LUT)", publisher = "USDA",
+                fetchedAt = System.currentTimeMillis(), toolName = null
             )
+        } else {
+            SourceEntity(
+                id = UUID.randomUUID().toString(), lookupKey = key,
+                url = "llm://chat-completions/$llmModel",
+                title = "LLM panel ($llmModel)", publisher = llmModel,
+                fetchedAt = System.currentTimeMillis(), toolName = null
+            )
+        }
+        val sources = buildList {
+            add(primarySource)
             for (url in sourceUrls) add(
                 SourceEntity(
                     id = UUID.randomUUID().toString(), lookupKey = key,

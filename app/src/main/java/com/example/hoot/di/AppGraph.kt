@@ -154,14 +154,14 @@ class AppGraph(context: Context) {
 
     /**
      * Feature C — "Smart picks for you": multi-nutrient food matching over
-     * the local cache (instant, deterministic) with an optional single LLM
-     * enhancement batch when the cache is thin.
+     * the local cache (instant, deterministic); a thin cache is topped up
+     * from the bundled [com.example.hoot.domain.nutrition.SeedFoodLibrary]
+     * LUT — zero LLM calls (LLM_AUDIT 2026-09).
      */
     val smartFoodProvider = SmartFoodProvider(
         nutrients = nutrients,
         tailConfig = tailConfig,
-        settings = settings,
-        llm = llmClient
+        settings = settings
     )
 
     /**
