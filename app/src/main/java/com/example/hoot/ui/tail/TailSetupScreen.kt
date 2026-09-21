@@ -78,6 +78,7 @@ fun TailSetupScreen(
     val mealHabit by viewModel.mealHabit.collectAsStateWithLifecycle()
     val pillsHabit by viewModel.pillsHabit.collectAsStateWithLifecycle()
     val waterHabit by viewModel.waterHabit.collectAsStateWithLifecycle()
+    val waterUnitMode by viewModel.waterUnitMode.collectAsStateWithLifecycle()
     val miscHabits by viewModel.miscHabits.collectAsStateWithLifecycle()
     val selectedPackage by viewModel.selectedPackage.collectAsStateWithLifecycle()
     val config by viewModel.config.collectAsStateWithLifecycle()
@@ -135,11 +136,13 @@ fun TailSetupScreen(
                     mealHabit = mealHabit,
                     pillsHabit = pillsHabit,
                     waterHabit = waterHabit,
+                    waterUnitMode = waterUnitMode,
                     miscHabits = miscHabits,
                     loading = loading,
                     onMeal = viewModel::setMealHabit,
                     onPills = viewModel::setPillsHabit,
                     onWater = viewModel::setWaterHabit,
+                    onWaterUnitMode = viewModel::setWaterUnitMode,
                     onAddMisc = viewModel::addMiscHabit,
                     onRemoveMisc = viewModel::removeMiscHabit,
                     onSave = viewModel::saveMapping,
@@ -215,11 +218,13 @@ private fun HabitMappingSection(
     mealHabit: String?,
     pillsHabit: String?,
     waterHabit: String?,
+    waterUnitMode: String,
     miscHabits: List<String>,
     loading: Boolean,
     onMeal: (String?) -> Unit,
     onPills: (String?) -> Unit,
     onWater: (String?) -> Unit,
+    onWaterUnitMode: (String) -> Unit,
     onAddMisc: (String?) -> Unit,
     onRemoveMisc: (String) -> Unit,
     onSave: () -> Unit,
@@ -273,6 +278,34 @@ private fun HabitMappingSection(
                 if (miscHabits.isEmpty()) "Add misc habit"
                 else "Misc (${miscHabits.size})"
             )
+        }
+    }
+    // Water unit interpretation (feedback 2026-09): only relevant when a
+    // water habit is mapped. Bare Tail numbers ("2500") must be read as the
+    // unit the user actually logs — ml for Tail's raw-counter logs.
+    if (waterHabit != null) {
+        Text(
+            "A number without a unit in your water habit means…",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            listOf(
+                "auto" to "Auto",
+                "ml" to "ml",
+                "l" to "liters",
+                "oz" to "fl oz",
+                "glass" to "glasses"
+            ).forEach { (mode, label) ->
+                FilterChip(
+                    selected = waterUnitMode == mode,
+                    onClick = { onWaterUnitMode(mode) },
+                    label = { Text(label) }
+                )
+            }
         }
     }
     miscHabits.forEachIndexed { index, name ->

@@ -33,7 +33,7 @@ class WaterIntakeTest {
         assertEquals(0.75, liters, 1e-9)
     }
 
-    @Test fun `unitless rows count as 250 ml glasses`() {
+    @Test fun `unitless rows count as 250 ml glasses in auto mode when small`() {
         val liters = WaterIntake.liters(
             listOf(
                 row("a", amount = 2.0, unit = null),      // "2" → 2 glasses
@@ -41,6 +41,56 @@ class WaterIntakeTest {
             )
         )
         assertEquals(5 * 0.25, liters, 1e-9)
+    }
+
+    @Test fun `unitless rows read as ml in auto mode when large`() {
+        // Tail logs raw ml: "2500" = 2.5 L (feedback 2026-09).
+        val liters = WaterIntake.liters(
+            listOf(row("a", amount = 2500.0, unit = null))
+        )
+        assertEquals(2.5, liters, 1e-9)
+    }
+
+    @Test fun `ml mode forces bare numbers to milliliters`() {
+        val liters = WaterIntake.liters(
+            listOf(row("a", amount = 2.0, unit = null)),
+            unitMode = "ml"
+        )
+        assertEquals(0.002, liters, 1e-9)
+    }
+
+    @Test fun `liter mode scales bare numbers by 1000`() {
+        val liters = WaterIntake.liters(
+            listOf(row("a", amount = 2.5, unit = null)),
+            unitMode = "l"
+        )
+        assertEquals(2.5, liters, 1e-9)
+    }
+
+    @Test fun `glass mode keeps the legacy 250 ml interpretation`() {
+        val liters = WaterIntake.liters(
+            listOf(row("a", amount = 2500.0, unit = null)),
+            unitMode = "glass"
+        )
+        assertEquals(2500 * 0.25, liters, 1e-9)
+    }
+
+    @Test fun `oz rows convert via the ounce factor`() {
+        val liters = WaterIntake.liters(
+            listOf(row("a", amount = 16.0, unit = "oz"))
+        )
+        assertEquals(16 * 29.5735 / 1000.0, liters, 1e-9)
+    }
+
+    @Test fun `explicit text units win over the mode`() {
+        val liters = WaterIntake.liters(
+            listOf(
+                row("a", amount = 1.5, unit = "l"),
+                row("b", amount = 250.0, unit = "ml")
+            ),
+            unitMode = "glass"
+        )
+        assertEquals(1.75, liters, 1e-9)
     }
 
     @Test fun `rows without any number contribute nothing`() {

@@ -57,6 +57,14 @@ class TailSetupViewModel(app: Application) : AndroidViewModel(app) {
     private val _waterHabit = MutableStateFlow<String?>(null)
     val waterHabit: StateFlow<String?> = _waterHabit.asStateFlow()
 
+    /**
+     * What a bare number in the water habit means (feedback 2026-09): Tail
+     * logs raw ml ("2500" = 2.5 L), so the setup exposes the interpretation
+     * instead of Hoot assuming 250 ml glasses. Persisted via saveMapping.
+     */
+    private val _waterUnitMode = MutableStateFlow("auto")
+    val waterUnitMode: StateFlow<String> = _waterUnitMode.asStateFlow()
+
     /** N miscellaneous habit mappings (v5); add/remove rows in the UI. */
     private val _miscHabits = MutableStateFlow<List<String>>(emptyList())
     val miscHabits: StateFlow<List<String>> = _miscHabits.asStateFlow()
@@ -116,6 +124,8 @@ class TailSetupViewModel(app: Application) : AndroidViewModel(app) {
         _mealHabit.value = cfg.mealHabitName
         _pillsHabit.value = cfg.pillsHabitName
         _waterHabit.value = cfg.waterHabitName
+        _waterUnitMode.value = runCatching { graph.settings.current().waterUnitMode }
+            .getOrNull() ?: "auto"
         _miscHabits.value = cfg.miscHabitNames
     }
 
@@ -129,6 +139,13 @@ class TailSetupViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setWaterHabit(name: String?) {
         _waterHabit.value = name
+    }
+
+    /** Sets the bare-number interpretation (one of [WaterIntake.UNIT_MODES]). */
+    fun setWaterUnitMode(mode: String) {
+        if (mode in com.example.hoot.domain.nutrition.WaterIntake.UNIT_MODES) {
+            _waterUnitMode.value = mode
+        }
     }
 
     /** Adds one more miscellaneous habit row (deduped). */
@@ -153,6 +170,7 @@ class TailSetupViewModel(app: Application) : AndroidViewModel(app) {
             _message.value = "Pick at least one habit to sync."
             return
         }
+        val unitMode = _waterUnitMode.value
         viewModelScope.launch {
             runCatching {
                 graph.settings.saveTailMapping(
@@ -160,10 +178,16 @@ class TailSetupViewModel(app: Application) : AndroidViewModel(app) {
                     mealHabit = meal.orEmpty(),
                     pillsHabit = pills.orEmpty(),
                     waterHabit = water.orEmpty(),
-                    miscHabitsJson = org.json.JSONArray(misc).toString()
+                    miscHabitsJson = org.json.JSONArray(misc).toString(),
+                    waterUnitMode = unitMode
                 )
                 graph.tailConfig.saveHabitMapping(meal, pills, water, misc)
             }.onSuccess {
+                // Unit mode changed → recompute every water day so history
+                // re-sums under the new interpretation.
+                if (water != null) {
+                    runCatching { graph.intakeAggregator.recomputeDays(null) }
+                }
                 _step.value = TailSetupStep.DONE
                 _message.value = "Saved — running first sync…"
                 // Full backlog on first run (cursors were reset), incremental afterwards.

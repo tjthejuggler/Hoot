@@ -114,6 +114,13 @@ fun HomeScreen(
     val selectedDay by vm.day.collectAsStateWithLifecycle()
     val isToday = selectedDay == todayKey()
 
+    // Water unit interpretation (feedback 2026-09): what a bare number in the
+    // Tail water habit means ("ml" for Tail's raw-ml logs). Reactive — the
+    // card re-sums immediately when the mode changes in Tail setup.
+    val settingsState by context.appGraph.settings.settings
+        .collectAsStateWithLifecycle(initialValue = null)
+    val waterUnitMode = settingsState?.waterUnitMode ?: "auto"
+
     if (showScoreExplainer) {
         ScoreExplainerSheet(snapshot = state.score, onDismiss = { showScoreExplainer = false })
     }
@@ -131,6 +138,7 @@ fun HomeScreen(
             meals = meals,
             supplements = supplements,
             tailEntries = tailEntries,
+            waterUnitMode = waterUnitMode,
             onDismiss = { showConsumedDetail = false }
         )
     }
@@ -229,11 +237,12 @@ fun HomeScreen(
         // ---- Consumed so far (selected day) --------------------------------
         // Tappable (feedback 2026-09): the card is the brief summary; tapping
         // it opens the full day sheet (meals + supplements + water + misc).
+        // Water sums honor the user's water-unit mode (Tail logs bare ml).
         item {
             ConsumedSummaryCard(
                 state = state,
                 isToday = isToday,
-                waterL = WaterIntake.liters(tailEntries),
+                waterL = WaterIntake.liters(tailEntries, waterUnitMode),
                 mealCount = meals.size,
                 supplementCount = supplements.size,
                 otherEntryCount = tailEntries.count { it.kind != WaterIntake.KIND_WATER },

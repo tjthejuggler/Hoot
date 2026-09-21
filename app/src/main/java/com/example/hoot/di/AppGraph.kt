@@ -93,7 +93,8 @@ class AppGraph(context: Context) {
     val intakeAggregator = IntakeAggregator(
         nutrients = nutrients,
         meals = meals,
-        tailEntries = tailEntries
+        tailEntries = tailEntries,
+        settings = settings
     )
 
     // ---- Tail integration (phase 2) — after its repository dependencies --

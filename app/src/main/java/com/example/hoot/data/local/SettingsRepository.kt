@@ -75,6 +75,14 @@ data class AppSettings(
     val tailPillsHabit: String = "",
     /** Water habit id; blank = unmapped (v5). */
     val tailWaterHabit: String = "",
+    /**
+     * What a BARE number in the Tail water habit means (feedback 2026-09:
+     * Tail logs raw ml — "2500" = 2.5 L — but Hoot previously assumed
+     * unitless numbers were 250 ml glasses). One of: "auto" (heuristic:
+     * ≥100 → ml, else glasses), "ml", "l", "oz", "glass". Explicit units in
+     * the text ("500 ml", "1.5 l") always win over this setting.
+     */
+    val waterUnitMode: String = "auto",
     /** Misc habit ids (JSON array string); blank = none (v5). */
     val tailMiscHabitsJson: String = "",
 
@@ -120,6 +128,7 @@ class SettingsRepository(private val context: Context) {
         val TAIL_MEAL_HABIT = stringPreferencesKey("tail_meal_habit")
         val TAIL_PILLS_HABIT = stringPreferencesKey("tail_pills_habit")
         val TAIL_WATER_HABIT = stringPreferencesKey("tail_water_habit")
+        val WATER_UNIT_MODE = stringPreferencesKey("water_unit_mode")
         val TAIL_MISC_HABITS_JSON = stringPreferencesKey("tail_misc_habits_json")
         val DIET_STYLE = stringPreferencesKey("diet_style")
         val DIET_ALLERGIES = stringSetPreferencesKey("diet_allergies")
@@ -152,6 +161,7 @@ class SettingsRepository(private val context: Context) {
             tailMealHabit = p[K.TAIL_MEAL_HABIT] ?: "",
             tailPillsHabit = p[K.TAIL_PILLS_HABIT] ?: "",
             tailWaterHabit = p[K.TAIL_WATER_HABIT] ?: "",
+            waterUnitMode = p[K.WATER_UNIT_MODE] ?: "auto",
             tailMiscHabitsJson = p[K.TAIL_MISC_HABITS_JSON] ?: "",
             dietStyle = p[K.DIET_STYLE] ?: "omnivore",
             dietAllergies = p[K.DIET_ALLERGIES] ?: emptySet(),
@@ -210,15 +220,22 @@ class SettingsRepository(private val context: Context) {
         mealHabit: String,
         pillsHabit: String,
         waterHabit: String = "",
-        miscHabitsJson: String = ""
+        miscHabitsJson: String = "",
+        waterUnitMode: String? = null
     ) {
         context.dataStore.edit {
             it[K.TAIL_PACKAGE] = tailPackage.trim()
             it[K.TAIL_MEAL_HABIT] = mealHabit.trim()
             it[K.TAIL_PILLS_HABIT] = pillsHabit.trim()
             it[K.TAIL_WATER_HABIT] = waterHabit.trim()
+            waterUnitMode?.let { mode -> it[K.WATER_UNIT_MODE] = mode }
             it[K.TAIL_MISC_HABITS_JSON] = miscHabitsJson.trim()
         }
+    }
+
+    /** Water unit interpretation for bare numbers (see [AppSettings.waterUnitMode]). */
+    suspend fun saveWaterUnitMode(mode: String) {
+        context.dataStore.edit { it[K.WATER_UNIT_MODE] = mode }
     }
 
     /** Dietary restrictions: style + free-form allergy/dislike sets. */

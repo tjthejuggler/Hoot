@@ -45,6 +45,7 @@ fun ConsumedDayDetailSheet(
     meals: List<MealEntity>,
     supplements: List<SupplementEntity>,
     tailEntries: List<TailEntryEntity>,
+    waterUnitMode: String = "auto",
     onDismiss: () -> Unit
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -63,7 +64,7 @@ fun ConsumedDayDetailSheet(
                         style = MaterialTheme.typography.titleLarge
                     )
                     Spacer(Modifier.height(4.dp))
-                    val waterL = WaterIntake.liters(tailEntries)
+                    val waterL = WaterIntake.liters(tailEntries, waterUnitMode)
                     Text(
                         buildString {
                             append("${meals.size} meal${if (meals.size == 1) "" else "s"}")

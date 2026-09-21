@@ -9,6 +9,7 @@ import com.example.hoot.data.repository.MealRepository
 import com.example.hoot.domain.nutrition.DayKeys
 import com.example.hoot.domain.nutrition.IngredientParser
 import com.example.hoot.domain.nutrition.SupplementListSplitter
+import com.example.hoot.domain.nutrition.parseWaterAmount
 import com.example.hoot.data.repository.TailConfigRepository
 import com.example.hoot.data.local.SettingsRepository
 import com.example.hoot.domain.nutrition.IntakeAggregator
@@ -168,25 +169,27 @@ class TailSyncManager(
                 // "water" nutrient row (canonical L) exists immediately.
                 val waterHabit = cfg.waterHabitName
                 if (waterHabit != null) {
-                    val history = tailClient.fetchFullHistory(pkg, waterHabit, cfg.lastWaterSyncAt)
+                    // ALWAYS full-pull (counter-water bug fix, 2026-09): the
+                    // cursor's `?after=` would (a) never re-serve the ~139
+                    // rows ingested before the value-column fix (they sit in
+                    // tail_entries with NULL amounts), and (b) miss same-day
+                    // counter mutations — a counter row's entry_ts stays at
+                    // midnight while its value grows, so strictly-greater
+                    // incremental filters skip every increment. A full pull
+                    // is ~140 rows, and stable dedup keys make the upserts
+                    // idempotent (today's row simply rewrites with the new
+                    // total). The cursor is still tracked for diagnostics.
+                    val history = tailClient.fetchFullHistory(pkg, waterHabit, null)
                     val (rows, maxTs) = waterEntities(history.entries, waterHabit)
                     tailEntries.upsertAll(rows)
                     waterInserted = rows.size
                     syncedIds += rows.map { it.id }
                     tailConfig.updateSyncCursor(null, null, maxTs, null)
                     if (rows.isNotEmpty()) {
-                        val days = rows.map { it.day }.distinct()
-                        runCatching { aggregator.recomputeDays(days) }
-                            .onFailure { android.util.Log.e(TAG, "water ledger recompute failed", it) }
-                    }
-                    // Backlog heal (water-card fix, 2026-09): a fresh mapping
-                    // (or a repaired v1 slice) must fill EVERY historical
-                    // water day, not just the days in this pass — days whose
-                    // cursor had already advanced past their water rows would
-                    // otherwise stay at 0 L forever. Idempotent per day.
-                    if (rows.isNotEmpty()) {
+                        // Recompute EVERY known water day: repaired rows live
+                        // anywhere in the backlog, not just this pass's days.
                         runCatching { aggregator.recomputeDays(tailEntries.distinctWaterDays()) }
-                            .onFailure { android.util.Log.e(TAG, "water backlog recompute failed", it) }
+                            .onFailure { android.util.Log.e(TAG, "water ledger recompute failed", it) }
                     }
                 }
 
@@ -411,27 +414,19 @@ internal fun entryKey(kind: String, entryId: String?, habitName: String, tsKey: 
     if (!entryId.isNullOrBlank()) "tail:$entryId"
     else "tail:$kind:${habitName.lowercase()}:$tsKey"
 
-/**
- * Water text → (amount, normalized unit) when the text contains a parseable
- * number: "500 ml" → (500, "ml"), "1.5 l" → (1500, "ml"), "2 glasses"
- * → (2, null). Returns null for no-number texts ("drank water").
- */
-internal fun parseWaterAmount(text: String): Pair<Double, String?>? {
-    val trimmed = text.trim()
-    val m = Regex("""(\d+(?:[.,]\d+)?)\s*(ml|milliliters?|l|liters?|oz|fl\s*oz)?""", RegexOption.IGNORE_CASE)
-        .find(trimmed) ?: return null
-    val value = m.groupValues[1].replace(',', '.').toDoubleOrNull() ?: return null
-    return when (m.groupValues[2].lowercase().replace("milliliter", "ml").replace("liter", "l")) {
-        "l" -> value * 1000.0 to "ml"
-        "" -> value to null
-        else -> value to "ml"   // ml / oz pass through with the ml bucket label
-    }
-}
 
 /**
- * Water-habit text entries → [TailEntryEntity] rows (kind = "water") plus the
+ * Water-habit entries → [TailEntryEntity] rows (kind = "water") plus the
  * incremental cursor (max ts). Invalid timestamps are skipped; dedup keys are
  * the shared stable convention, so full-backlog re-pulls upsert in place.
+ *
+ * TWO source shapes (counter-water bug fix, 2026-09):
+ *  - TEXT rows ("250 ml") → [parseWaterAmount] as before;
+ *  - COUNTER rows (the user's habit: value column, empty text) → the daily
+ *    count IS the amount, stored unitless so the water-unit mode interprets
+ *    it (Tail logs raw ml — "2500" = 2.5 L).
+ * Counter rows also mutate in place during the day (count increments), so
+ * their day key rides the ts: upserts rewrite today's row on every pass.
  */
 internal fun waterEntities(
     entries: List<TailTextEntry>,
@@ -445,14 +440,18 @@ internal fun waterEntities(
         // back — the local tail_entries row already exists, a re-ingest
         // would double-count the day's water total.
         if (EchoRegistry.isKnownTextEcho(habitName, e.timestampMs)) return@mapNotNull null
-        val (amount, unit) = parseWaterAmount(e.text) ?: (null to null)
+        val (amount, unit) = when {
+            e.text.isNotBlank() -> parseWaterAmount(e.text) ?: (null to null)
+            e.value != null && e.value > 0 -> e.value to null   // counter daily total
+            else -> null to null
+        }
         TailEntryEntity(
             id = entryKey("water", e.entryId, habitName, e.timestampRaw),
             kind = KIND_WATER,
             habitName = habitName,
             timestamp = e.timestampMs,
             day = dayKey(e.timestampMs),
-            text = e.text,
+            text = e.text.ifBlank { e.value?.let { "Water count: ${it.toInt()}" } ?: "" },
             amount = amount,
             unit = unit
         )

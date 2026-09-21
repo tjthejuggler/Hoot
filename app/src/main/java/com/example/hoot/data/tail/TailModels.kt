@@ -16,7 +16,7 @@ data class TailHabit(
     val isTextType: Boolean get() = habitType == "text"
 }
 
-/** One text-habit log entry ("Took Pills" etc.). */
+/** One text-habit log entry ("Took Pills" etc.) or value-habit daily row. */
 data class TailTextEntry(
     /** Stable entry id (v2); null on v1 — dedup then falls back to habit+timestamp key. */
     val entryId: String?,
@@ -25,7 +25,14 @@ data class TailTextEntry(
     val timestampRaw: String,
     /** Epoch millis parsed from [timestampRaw] (device-local zone); 0 when unparseable. */
     val timestampMs: Long,
-    val text: String
+    val text: String,
+    /**
+     * Value-habit (counter) daily count (v2 `value` column); null on text
+     * rows. The user's water habit is a counter — its [value] IS the day's
+     * water amount (ml), which is why text-based parsing saw empty strings
+     * and every Tail water row contributed 0 L (bug 2026-09).
+     */
+    val value: Double? = null
 )
 
 /** One meal-log record (Tail's internal `MealLog` shape, v2 `/v2/habits/{id}/entries`). */

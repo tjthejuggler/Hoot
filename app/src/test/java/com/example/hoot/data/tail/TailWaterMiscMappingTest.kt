@@ -1,5 +1,6 @@
 package com.example.hoot.data.tail
 
+import com.example.hoot.domain.nutrition.parseWaterAmount
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -13,25 +14,32 @@ class TailWaterMiscMappingTest {
             timestampRaw = tsRaw, timestampMs = tsMs, text = text
         )
 
-    // ── parseWaterAmount ─────────────────────────────────────────────────
+    // ── parseWaterAmount (2026-09: keeps the TEXT's own unit; conversion
+    //    happens at read time via WaterIntake.liters + the unit mode) ──────
 
     @Test fun `milliliter amounts parse as-is`() {
         assertEquals(500.0 to "ml", parseWaterAmount("500 ml"))
         assertEquals(250.0 to "ml", parseWaterAmount("250ml"))
     }
 
-    @Test fun `liter amounts normalize to milliliters`() {
-        assertEquals(1500.0 to "ml", parseWaterAmount("1.5 l"))
-        assertEquals(2000.0 to "ml", parseWaterAmount("2 liters"))
+    @Test fun `liter amounts keep their unit`() {
+        assertEquals(1.5 to "l", parseWaterAmount("1.5 l"))
+        assertEquals(2.0 to "l", parseWaterAmount("2 liters"))
+    }
+
+    @Test fun `ounce amounts keep their unit`() {
+        assertEquals(16.0 to "oz", parseWaterAmount("16 oz"))
+        assertEquals(8.0 to "oz", parseWaterAmount("8 fl oz"))
     }
 
     @Test fun `unitless numbers parse with null unit`() {
         assertEquals(2.0 to null, parseWaterAmount("2"))
         assertEquals(3.0 to null, parseWaterAmount("3 glasses"))
+        assertEquals(2500.0 to null, parseWaterAmount("2500"))   // Tail raw ml
     }
 
     @Test fun `comma decimal amounts parse`() {
-        assertEquals(1500.0 to "ml", parseWaterAmount("1,5 l"))
+        assertEquals(1.5 to "l", parseWaterAmount("1,5 l"))
     }
 
     @Test fun `text without numbers yields null`() {
@@ -61,6 +69,30 @@ class TailWaterMiscMappingTest {
         )
         assertNull(rows[0].amount)
         assertNull(rows[0].unit)
+    }
+
+    // ── counter-habit rows (the user's actual water habit shape) ─────────
+
+    @Test fun `counter value rows become unitless amounts`() {
+        val counter = entry("c1", "2026-09-20 00:00:00", 1_758_240_000_000, "").copy(value = 2500.0)
+        val (rows, _) = waterEntities(listOf(counter), "Water")
+        assertEquals(1, rows.size)
+        assertEquals(2500.0, rows[0].amount!!, 1e-9)
+        assertNull(rows[0].unit)   // water-unit mode interprets bare ml
+        assertEquals("Water count: 2500", rows[0].text)
+    }
+
+    @Test fun `counter zero rows contribute nothing`() {
+        val counter = entry("c1", "2026-09-20 00:00:00", 1_758_240_000_000, "").copy(value = 0.0)
+        val (rows, _) = waterEntities(listOf(counter), "Water")
+        assertNull(rows[0].amount)
+    }
+
+    @Test fun `text rows win over value when both present`() {
+        val both = entry("b1", "2026-09-20 08:00:00", 1_758_240_000_000, "250 ml").copy(value = 2500.0)
+        val (rows, _) = waterEntities(listOf(both), "Water")
+        assertEquals(250.0, rows[0].amount!!, 1e-9)
+        assertEquals("ml", rows[0].unit)
     }
 
     @Test fun `invalid timestamps are skipped and cursor is max ts`() {

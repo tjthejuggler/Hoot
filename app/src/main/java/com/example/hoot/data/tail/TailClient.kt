@@ -297,7 +297,12 @@ class TailClient(context: Context) {
         }
     }
 
-    /** Parses text-entry rows; [filter] receives the raw habit_id column (may be null on v1). */
+    /**
+     * Parses entry rows (text AND value shapes); [filter] receives the raw
+     * habit_id column (may be null on v1). Counter-habit rows carry the
+     * v2 `value` column (daily count) with an empty `entry_text` — captured
+     * so mapped counter habits (the user's water) stop reading as blank.
+     */
     private fun parseTextRows(cursor: Cursor?, filter: (String?) -> Boolean): List<TailTextEntry> {
         cursor ?: return emptyList()
         return cursor.use { c ->
@@ -312,7 +317,8 @@ class TailClient(context: Context) {
                             habitName = c.columnString(COL_HABIT_NAME) ?: habitCol ?: "",
                             timestampRaw = tsRaw,
                             timestampMs = parseTailTimestamp(tsRaw),
-                            text = c.columnString(COL_ENTRY_TEXT) ?: ""
+                            text = c.columnString(COL_ENTRY_TEXT) ?: "",
+                            value = c.columnDouble(COL_VALUE)
                         )
                     )
                 }
@@ -384,6 +390,9 @@ class TailClient(context: Context) {
         const val COL_HABIT_NAME = "habit_name"
         const val COL_ENTRY_TS = "entry_ts"
         const val COL_ENTRY_TEXT = "entry_text"
+
+        /** v2 value-habit (counter) daily count column (Tail's COL_VALUE). */
+        const val COL_VALUE = "value"
 
         /** Soft cap on any single provider probe (binder calls can block). */
         const val PROBE_TIMEOUT_MS = 8_000L
