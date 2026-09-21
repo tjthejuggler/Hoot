@@ -267,12 +267,19 @@ class TailSyncManager(
 
     // ── Mapping helpers (pure-ish, JVM-testable) ─────────────────────────
 
-    /** v2 meal rows → [MealEntity]s + the new incremental cursor (max ts). */
+    /**
+     * v2 meal rows → [MealEntity]s + the new incremental cursor (max ts).
+     * Echo filter (protocol v6): rows whose `entry_id` is a `hoot:…` id are
+     * the Tail-side reflection of Hoot's own push — skipped, or Hoot would
+     * double-count every meal it captured in-app. Cursor still advances past
+     * them, so they are visited exactly once.
+     */
     private fun mealEntities(entries: List<TailMealEntry>): Pair<List<MealEntity>, Long?> {
         var maxTs: Long? = null
         val rows = entries.mapNotNull { e ->
             if (e.timestamp <= 0) return@mapNotNull null
             if (maxTs == null || e.timestamp > maxTs!!) maxTs = e.timestamp
+            if (EchoRegistry.isEchoEntryId(e.entryId)) return@mapNotNull null
             MealEntity(
                 id = entryKey("meal", e.entryId, e.habitName, e.timestamp.toString()),
                 tailHabitName = e.habitName,
@@ -280,13 +287,22 @@ class TailSyncManager(
                 day = dayKey(e.timestamp),
                 title = e.title ?: e.summary?.take(80),
                 rawText = buildMealRawText(e),
+                summary = e.summary,
+                calories = e.calories ?: 0,
+                proteinGrams = e.proteinGrams ?: 0.0,
+                carbsGrams = e.carbsGrams ?: 0.0,
+                fatGrams = e.fatGrams ?: 0.0,
                 source = "tail"
             )
         }
         return rows to maxTs
     }
 
-    /** v1 text fallback for the meal habit → raw-text [MealEntity]s + cursor. */
+    /**
+     * v1 text fallback for the meal habit → raw-text [MealEntity]s + cursor.
+     * Echo filter: (habit, second-ts) registry hits are Hoot's own pushes
+     * reflected back — skipped, cursor still advances.
+     */
     private fun textMealEntities(
         entries: List<TailTextEntry>,
         habitName: String
@@ -295,6 +311,7 @@ class TailSyncManager(
         val rows = entries.mapNotNull { e ->
             if (e.timestampMs <= 0) return@mapNotNull null
             if (maxTs == null || e.timestampMs > maxTs!!) maxTs = e.timestampMs
+            if (EchoRegistry.isKnownTextEcho(habitName, e.timestampMs)) return@mapNotNull null
             MealEntity(
                 id = entryKey("meal", e.entryId, habitName, e.timestampRaw),
                 tailHabitName = habitName,
@@ -353,6 +370,10 @@ internal fun supplementEntities(
     for (e in entries) {
         if (e.timestampMs <= 0) continue
         if (maxTs == null || e.timestampMs > maxTs) maxTs = e.timestampMs
+        // Echo filter (protocol v6): Hoot's own supplement push reflects
+        // back through Tail's text log — skipping prevents duplicate rows
+        // (Hoot already stored each item at capture time).
+        if (EchoRegistry.isKnownTextEcho(habitName, e.timestampMs)) continue
         val items = SupplementListSplitter.split(e.text)
         if (items.isEmpty()) continue
         val baseKey = entryKey("pills", e.entryId, habitName, e.timestampRaw)
@@ -411,6 +432,10 @@ internal fun waterEntities(
     val rows = entries.mapNotNull { e ->
         if (e.timestampMs <= 0) return@mapNotNull null
         if (maxTs == null || e.timestampMs > maxTs) maxTs = e.timestampMs
+        // Echo filter (protocol v6): skip Hoot's own water pushes reflected
+        // back — the local tail_entries row already exists, a re-ingest
+        // would double-count the day's water total.
+        if (EchoRegistry.isKnownTextEcho(habitName, e.timestampMs)) return@mapNotNull null
         val (amount, unit) = parseWaterAmount(e.text) ?: (null to null)
         TailEntryEntity(
             id = entryKey("water", e.entryId, habitName, e.timestampRaw),
@@ -438,6 +463,8 @@ internal fun miscEntities(
     val rows = entries.mapNotNull { e ->
         if (e.timestampMs <= 0) return@mapNotNull null
         if (maxTs == null || e.timestampMs > maxTs) maxTs = e.timestampMs
+        // Echo filter (protocol v6): same rule as water/misc pushes.
+        if (EchoRegistry.isKnownTextEcho(habitName, e.timestampMs)) return@mapNotNull null
         TailEntryEntity(
             id = entryKey("misc", e.entryId, habitName, e.timestampRaw),
             kind = KIND_MISC,

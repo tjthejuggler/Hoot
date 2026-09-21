@@ -145,6 +145,24 @@ fun AddSupplementScreen(onDone: () -> Unit) {
                                 )
                             }
                             graph.meals.upsertSupplements(rows)
+
+                            // Joint-habit projection (protocol v6): ONE text
+                            // entry, items newline-joined — Tail's multi-item
+                            // "Took Pills" convention (one log line, ONE
+                            // count increment; per-item pushes would collide
+                            // on Tail's second-precision log keys).
+                            runCatching {
+                                val pillsHabit = graph.tailConfig.tailConfig()
+                                    ?.pillsHabitName?.takeIf { it.isNotBlank() }
+                                if (pillsHabit != null) {
+                                    graph.tailPush.pushTextEntry(
+                                        pillsHabit,
+                                        items.joinToString("\n"),
+                                        now
+                                    )
+                                }
+                            }
+
                             rows.size
                         }
                         saving = false

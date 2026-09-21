@@ -158,7 +158,7 @@ object SmartFoodMatcher {
         excesses: List<SmartExcess>,
         foods: List<SmartCandidateFood>,
         diet: SmartDietFilter = SmartDietFilter(),
-        max: Int = 6
+        max: Int = 12
     ): List<SmartFoodPick> {
         val usableGaps = gaps.filter { it.remainingDeficit > 0 }
         if (usableGaps.isEmpty() || foods.isEmpty()) return emptyList()

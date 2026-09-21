@@ -1,7 +1,6 @@
 package com.example.hoot.ui.home
 
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -14,7 +13,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Card
@@ -33,7 +31,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.hoot.appGraph
@@ -50,7 +47,8 @@ import com.example.hoot.ui.theme.ScoreHigh
  * Feature C — "Smart picks for you": the TOP section of Home. Foods that hit
  * MULTIPLE current gaps while avoiding excess/limit-tracker nutrients,
  * scored by [com.example.hoot.domain.insights.SmartFoodMatcher] (pure,
- * cache-first, instant). Horizontal strip of cards; tap → detail sheet.
+ * cache-first, instant). Vertical list (2026-09: widened to ~12 picks, the
+ * old horizontal 6-card strip hid most suggestions); tap row → detail sheet.
  */
 @Composable
 fun SmartPicksSection(
@@ -66,13 +64,8 @@ fun SmartPicksSection(
         )
         Spacer(Modifier.height(8.dp))
         when {
-            picks.isNotEmpty() -> Row(
-                Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                picks.forEach { pick -> SmartPickCard(pick, onClick = { onOpenPick(pick) }) }
+            picks.isNotEmpty() -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                picks.forEach { pick -> SmartPickRow(pick, onClick = { onOpenPick(pick) }) }
             }
             cacheCold && !loading -> Card(Modifier.fillMaxWidth()) {
                 EmptyState(
@@ -88,40 +81,48 @@ fun SmartPicksSection(
     }
 }
 
-/** One food card in the horizontal strip: emoji, name, hits summary, caution chip. */
+/** One suggestion row: emoji, name, hits summary, serving + caution chip. */
 @Composable
-private fun SmartPickCard(pick: SmartFoodPick, onClick: () -> Unit) {
+private fun SmartPickRow(pick: SmartFoodPick, onClick: () -> Unit) {
     val summary = pick.hitsSummary()
     Card(
         Modifier
-            .width(150.dp)
+            .fillMaxWidth()
             .clickable(onClick = onClick)
             .semantics {
                 contentDescription = "${pick.displayName}: $summary. Tap for details."
             }
     ) {
-        Column(Modifier.padding(12.dp)) {
+        Row(
+            Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             Text(
                 pick.emojiHint ?: foodEmoji(pick.displayName),
-                style = MaterialTheme.typography.headlineMedium,
-                modifier = Modifier.fillMaxWidth(),
-                textAlign = TextAlign.Center
+                style = MaterialTheme.typography.headlineSmall
             )
-            Spacer(Modifier.height(6.dp))
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    pick.displayName,
+                    style = MaterialTheme.typography.titleSmall,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    summary,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ScoreHigh,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis
+                )
+            }
             Text(
-                pick.displayName,
-                style = MaterialTheme.typography.titleSmall,
-                maxLines = 1, overflow = TextOverflow.Ellipsis
-            )
-            Spacer(Modifier.height(2.dp))
-            Text(
-                summary,
+                "${pick.servingGrams.toInt()} g",
                 style = MaterialTheme.typography.labelSmall,
-                color = ScoreHigh,
-                maxLines = 1, overflow = TextOverflow.Ellipsis
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             if (pick.cautions.isNotEmpty()) {
-                Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.width(8.dp))
                 AssistChip(
                     onClick = onClick,
                     label = {
@@ -132,14 +133,6 @@ private fun SmartPickCard(pick: SmartFoodPick, onClick: () -> Unit) {
                         )
                     },
                     modifier = Modifier.height(24.dp)
-                )
-            }
-            if (pick.source == "llm") {
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "AI pick",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.tertiary
                 )
             }
         }

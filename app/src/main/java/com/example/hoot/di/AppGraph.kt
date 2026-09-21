@@ -10,7 +10,9 @@ import com.example.hoot.data.repository.NutrientRepository
 import com.example.hoot.data.intake.IntakeCaptureService
 import com.example.hoot.data.repository.TailConfigRepository
 import com.example.hoot.data.repository.TailEntryRepository
+import com.example.hoot.data.tail.EchoRegistry
 import com.example.hoot.data.tail.TailClient
+import com.example.hoot.data.tail.TailPushClient
 import com.example.hoot.data.tail.TailSyncManager
 import com.example.hoot.data.tail.TailSyncState
 import com.example.hoot.domain.insights.RecommendationEngine
@@ -37,6 +39,18 @@ class AppGraph(context: Context) {
 
     /** Room database — builds once per process; seeds nutrients on first create. */
     val database: HootDatabase = HootDatabase.build(appContext, appScope)
+
+    init {
+        // Echo-registry warm-up BEFORE any sync/pull can run: the filter set
+        // is what keeps Hoot's own pushed rows from re-ingesting as echoes.
+        EchoRegistry.init(appContext)
+    }
+
+    init {
+        // Echo-registry warm-up BEFORE any sync/pull can run: the filter set
+        // is what keeps Hoot's own pushed rows from re-ingesting as echoes.
+        EchoRegistry.init(appContext)
+    }
 
     // ---- Repositories (thin, over DAOs / DataStore) ----------------------
     val meals = MealRepository(
@@ -87,6 +101,15 @@ class AppGraph(context: Context) {
     val tailClient = TailClient(appContext)
 
     /**
+     * Joint-habit write path (protocol v6): pushes Hoot-side captures
+     * (meals, supplements, water) INTO Tail so a change in either app
+     * reflects in the other for that day. Registry init MUST precede the
+     * first sync — the echo filter is what keeps pushed rows from coming
+     * back as duplicate Tail data.
+     */
+    val tailPush = TailPushClient(appContext)
+
+    /**
      * Tail → Room sync pipeline (full backlog on first run, `?after=`
      * incremental afterwards, coroutine periodic loop).
      */
@@ -114,7 +137,8 @@ class AppGraph(context: Context) {
         settings = settings,
         tailConfig = tailConfig,
         llm = llmClient,
-        aggregator = intakeAggregator
+        aggregator = intakeAggregator,
+        tailPush = tailPush
     )
 
     // ---- Nutrition resolution engine (phase 3) ---------------------------

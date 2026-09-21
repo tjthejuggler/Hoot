@@ -225,6 +225,28 @@ class SmartFoodMatcherTest {
         assertEquals(3, picks.size)
     }
 
+    @Test
+    fun `default cap is 12 picks matching SmartFoodProvider MAX_PICKS`() {
+        // const val is inlined at the call site — no Android deps touched.
+        assertEquals(12, SmartFoodProvider.MAX_PICKS)
+    }
+
+    @Test
+    fun `default match returns up to 12 distinct picks without explicit max`() {
+        // 12 distinct foods each covering a different gap → all 12 survive
+        // the diversity dedupe and the (default) cap of 12.
+        val foods = (1..12).map { i ->
+            food("food$i", per100 = mapOf("nutrient$i" to 200.0))
+        }
+        val gaps = (1..12).map { i -> gap("nutrient$i", target = 400.0, today = 100.0) }
+        val picks = SmartFoodMatcher.match(
+            gaps = gaps,
+            excesses = emptyList(),
+            foods = foods
+        )
+        assertEquals(12, picks.size)
+    }
+
     // ---- Diet filtering -------------------------------------------------------------
 
     @Test

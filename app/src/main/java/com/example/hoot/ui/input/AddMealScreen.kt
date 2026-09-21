@@ -194,6 +194,28 @@ internal suspend fun saveMeal(
             )
         }
     )
+
+    // Joint-habit projection (protocol v6): mirror the manual meal INTO
+    // Tail's mapped meal habit. Zero kcal/macros here — the resolver fills
+    // Hoot's side asynchronously; Tail shows title + ingredient trail.
+    runCatching {
+        val mealHabit = graph.tailConfig.tailConfig()?.mealHabitName
+            ?.takeIf { it.isNotBlank() } ?: return@runCatching
+        graph.tailPush.pushMeal(
+            habitName = mealHabit,
+            title = title.trim().ifBlank { "Meal" },
+            summary = null,
+            calories = 0,
+            proteinGrams = 0.0,
+            carbsGrams = 0.0,
+            fatGrams = 0.0,
+            ingredients = parsed.map { it.rawText },
+            isVegan = false,
+            healthNotes = null,
+            timestampMs = timestamp
+        )
+    }
+
     return parsed.size
 }
 

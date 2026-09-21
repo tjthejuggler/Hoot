@@ -11,6 +11,7 @@ import com.example.hoot.data.remote.LlmConfig
 import com.example.hoot.data.repository.MealRepository
 import com.example.hoot.data.repository.TailConfigRepository
 import com.example.hoot.data.repository.TailEntryRepository
+import com.example.hoot.data.tail.TailPushClient
 import com.example.hoot.domain.intake.CapturedMeal
 import com.example.hoot.domain.nutrition.IntakeAggregator
 import com.example.hoot.domain.intake.CapturedMealJson
@@ -70,7 +71,8 @@ class IntakeCaptureService(
     private val settings: SettingsRepository,
     private val tailConfig: TailConfigRepository,
     private val llm: LlmClient,
-    private val aggregator: IntakeAggregator? = null   // nullable: JVM tests construct without DB
+    private val aggregator: IntakeAggregator? = null,  // nullable: JVM tests construct without DB
+    private val tailPush: TailPushClient? = null       // nullable: joint-habit push (protocol v6)
 ) {
     /** Text / voice / photo meal capture. [photoFile] nullable. */
     suspend fun captureMeal(
@@ -174,6 +176,26 @@ class IntakeCaptureService(
             photoPath = photoFile?.absolutePath
         )
         meals.ingestPreservingResolution(listOf(meal), emptyList(), ingredientRows(mealId, ingredients))
+
+        // Joint-habit projection (protocol v6): mirror the capture INTO Tail's
+        // meal habit so the day shows the meal there too. Fire-and-forget —
+        // Hoot's own row is already committed; Tail absence is fine.
+        tailConfig.tailConfig()?.mealHabitName?.let { mealHabit ->
+            tailPush?.pushMeal(
+                habitName = mealHabit,
+                title = captured.title.ifBlank { "Meal" },
+                summary = captured.summary?.ifBlank { null },
+                calories = captured.calories,
+                proteinGrams = captured.proteinGrams,
+                carbsGrams = captured.carbsGrams,
+                fatGrams = captured.fatGrams,
+                ingredients = captured.ingredientsDetected,
+                isVegan = captured.isVeganVerified,
+                healthNotes = captured.healthNotes,
+                timestampMs = timestamp
+            )
+        }
+
         CaptureOutcome.Analyzed(
             mealId = mealId,
             captured = captured,
@@ -206,6 +228,19 @@ class IntakeCaptureService(
             )
         }
         meals.ingestPreservingResolution(emptyList(), rows)
+
+        // Joint-habit projection: ONE text entry with the items joined by
+        // newlines — Tail's own multi-item convention ("iron\nvitamin D" =
+        // one log line, ONE count increment). Pushing per-item entries would
+        // collide on Tail's second-precision log keys AND over-count. On the
+        // echo, Hoot's supplementEntities splits the entry back into the
+        // same per-item rows 1:1.
+        val pillsHabit = runCatching { tailConfig.tailConfig()?.pillsHabitName }
+            .getOrNull()?.takeIf { it.isNotBlank() }
+        if (pillsHabit != null && items.isNotEmpty()) {
+            tailPush?.pushTextEntry(pillsHabit, items.joinToString("\n"), timestamp)
+        }
+
         rows.size
     }
 
@@ -232,6 +267,14 @@ class IntakeCaptureService(
                 )
             )
         )
+
+        // Joint-habit projection: "$ml ml" into Tail's mapped water habit —
+        // exactly the text Tail-side water entries carry, so the echo parses
+        // back to the same amount.
+        runCatching { tailConfig.tailConfig()?.waterHabitName }
+            .getOrNull()?.takeIf { it.isNotBlank() }
+            ?.let { waterHabit -> tailPush?.pushTextEntry(waterHabit, text, timestamp) }
+
         aggregator?.let { agg ->
             runCatching { agg.recomputeDays(listOf(day)) }
                 .onFailure { Log.e(TAG, "water quick-add ledger recompute failed", it) }

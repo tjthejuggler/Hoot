@@ -34,8 +34,8 @@ class SmartFoodProvider(
         /** Below this many usable cached profiles the section stays empty. */
         const val MIN_CANDIDATES = 10
 
-        /** Max picks shown in the Home strip. */
-        const val MAX_PICKS = 6
+        /** Max picks shown in the Home section (2026-09: widened from 6 per user request). */
+        const val MAX_PICKS = 12
     }
 
     /** Outcome of one refresh — surfaced for logging/tests. */
