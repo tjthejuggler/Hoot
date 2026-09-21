@@ -255,6 +255,8 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                 it.id to NutrientInsightDef(
                     id = it.id, name = it.name, unit = it.unit, tier = it.tier,
                     rda = it.rdaValue, ul = it.ulValue, foodSources = it.foodSources,
+                    deficiencySymptoms = it.deficiencySymptoms,
+                    excessRisks = it.excessRisks,
                     isLimitTracker = it.id in LIMIT_TRACKER_IDS
                 )
             },

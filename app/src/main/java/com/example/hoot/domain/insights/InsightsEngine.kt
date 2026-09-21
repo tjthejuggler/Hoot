@@ -30,7 +30,14 @@ data class Insight(
     val severity: InsightSeverity,
     val title: String,
     val message: String,
-    val nutrientId: String? = null
+    val nutrientId: String? = null,
+    /**
+     * State-appropriate "what you may notice" line from the curated seed —
+     * deficiency symptoms for [InsightKind.DEFICIENCY], excess risks for
+     * [InsightKind.EXCESS] (see [SymptomCatalog]). Null when the seed has
+     * no text for the state or the kind is not nutrient-state-bound.
+     */
+    val effects: String? = null
 )
 
 /** Inputs for [InsightsEngine.analyze] — everything pre-fetched by the caller. */
@@ -140,6 +147,10 @@ data class NutrientInsightDef(
     val rda: Double?,
     val ul: Double?,
     val foodSources: String?,
+    /** Curated deficiency symptoms (seed markdown) for the effects line. */
+    val deficiencySymptoms: String? = null,
+    /** Curated excess risks (seed markdown) for the effects line. */
+    val excessRisks: String? = null,
     /** Practical cap present in the seed (limit-trackers score against it). */
     val isLimitTracker: Boolean = false
 )
@@ -213,7 +224,10 @@ object InsightsEngine {
                         " Good sources: %s").format(
                             (a.avgPct * 100).toInt(), a.name, a.daysWithData, a.lowDays,
                             sourcesFor(window, a.id)
-                        )
+                        ),
+                    effects = SymptomCatalog.effectsFor(
+                        InsightKind.DEFICIENCY, window.definitions[a.id]
+                    )
                 )
             }
 
@@ -229,6 +243,9 @@ object InsightsEngine {
                     message = "Intake exceeded the %s on %d of %d days (peak %.4g %s).".format(
                         if (a.isLimit) "cap" else "UL",
                         a.overCapDays, a.daysWithData, a.maxIntake, a.unit
+                    ),
+                    effects = SymptomCatalog.effectsFor(
+                        InsightKind.EXCESS, window.definitions[a.id]
                     )
                 )
             }

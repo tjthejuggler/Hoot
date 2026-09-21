@@ -81,11 +81,18 @@ fun NutrientDetailSheet(
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
-            state.def.deficiencySymptoms?.takeIf { it.isNotBlank() }?.let { symptoms ->
+            // Situation-aware card (feedback: symptoms of too little, effects
+            // of too much): deficient vs target → deficiency symptoms;
+            // at/over target with a limit → excess risks.
+            val overLimit = state.hasTarget && state.target > 0 && state.intake >= state.target &&
+                (state.def.ulValue ?: state.def.rdaValue ?: 0.0) > 0.0
+            val effectsRaw = if (overLimit) state.def.excessRisks else state.def.deficiencySymptoms
+            val effectsTitle = if (overLimit) "If you keep overshooting" else "Why it matters"
+            effectsRaw?.takeIf { it.isNotBlank() }?.let { symptoms ->
                 item {
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(12.dp)) {
-                            Text("Why it matters", style = MaterialTheme.typography.titleSmall)
+                            Text(effectsTitle, style = MaterialTheme.typography.titleSmall)
                             Spacer(Modifier.height(4.dp))
                             Text(
                                 symptoms.trimIndent().trim(),

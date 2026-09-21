@@ -330,6 +330,12 @@ private fun InsightCard(insight: Insight, tier: Int?, dietFilter: com.example.ho
         InsightSeverity.WARNING -> "watch"
         InsightSeverity.INFO -> "info"
     }
+    // State-appropriate effects line (feedback: show common symptoms/effects
+    // of deficiencies and excesses) — seed-curated, diet-sanitized too.
+    val safeEffects = insight.effects?.let {
+        com.example.hoot.domain.insights.DietAwareSources
+            .sanitizeForDisplay(it, dietFilter.toProfile())
+    }
     Row(
         Modifier
             .fillMaxWidth()
@@ -366,6 +372,14 @@ private fun InsightCard(insight: Insight, tier: Int?, dietFilter: com.example.ho
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 3, overflow = TextOverflow.Ellipsis
             )
+            safeEffects?.takeIf { it.isNotBlank() }?.let { effects ->
+                Text(
+                    "You may notice: $effects",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = severityColor,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis
+                )
+            }
         }
     }
 }
