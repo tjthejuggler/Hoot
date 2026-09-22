@@ -62,6 +62,13 @@ data class HomeUiState(
      * top slice for the dashboard.
      */
     val allSmartPicks: List<SmartFoodPick> = emptyList(),
+    /**
+     * Deepest ranking (feedback 2026-09-21 "generate even more"): quality
+     * floor fully relaxed — strict superset of [allSmartPicks]. The
+     * [AllSmartPicksSheet] hands this out only after the standard ranking is
+     * exhausted. Always precomputed (zero-LLM, memoized).
+     */
+    val deepSmartPicks: List<SmartFoodPick> = emptyList(),
     /** True when focus gaps exist but the cache is too cold to pick from. */
     val smartPicksCacheCold: Boolean = false
 )
@@ -103,12 +110,20 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                 val comps = defs.mapNotNull { def ->
                     val isLimit = def.id in LIMIT_TRACKER_IDS
                     val target = effectiveTarget(def, goals[def.id]?.targetValue)
-                    if (target <= 0.0) return@mapNotNull null
+                    // 0-kcal bug fix (2026-09-21): the old `target <= 0 → drop`
+                    // filter silently discarded calories/total_fat (their seed
+                    // RDA is null → effectiveTarget 0) although the ledger had
+                    // real values — the Energy card read "No calories logged
+                    // yet" on every day. Keep a row when EITHER side exists;
+                    // coverage math guards the target below.
+                    if (target <= 0.0 && totalMap[def.id] == null) return@mapNotNull null
                     val intake = totalMap[def.id] ?: 0.0
-                    val coverage = if (isLimit) {
-                        if (intake <= target) 1.0
+                    val coverage = when {
+                        target <= 0.0 -> 0.0        // no goal set — display-only row
+                        isLimit -> if (intake <= target) 1.0
                         else (1.0 - (intake - target) / (target * 0.5)).coerceIn(0.0, 1.0)
-                    } else (intake / target).coerceIn(0.0, 1.0)
+                        else -> (intake / target).coerceIn(0.0, 1.0)
+                    }
                     val exceeded = isLimit && intake > target ||
                         def.ulValue?.let { !isLimit && intake > it } == true
                     ScoreComponent(
@@ -163,6 +178,17 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                             it.id to effectiveTarget(it, goals[it.id]?.targetValue)
                         }
                     )
+                }.onFailure {
+                    if (it is kotlinx.coroutines.CancellationException) throw it
+                    // Silent-swallow fix (2026-09-21): a failing refresh left
+                    // picks empty AND flagged the section "cache cold",
+                    // pinning the misleading "Building your smart picks"
+                    // placeholder with no diagnostic trail. Log it loudly; the
+                    // flag below stays false on failure (an error is not a
+                    // cold cache). CancellationException is rethrown —
+                    // flatMapLatest legitimately cancels superseded runs and
+                    // that is not an error.
+                    android.util.Log.e("HootSmartPicks", "smart picks refresh failed", it)
                 }.getOrNull()
 
                 val ui = HomeUiState(
@@ -170,8 +196,12 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                     loading = false,
                     score = snapshot,
                     focusNow = focus,
-                    tier1 = comps.filter { it.tier == 1 }.sortedBy { it.coverage },
-                    otherTiers = comps.filter { it.tier != 1 }
+                    // Tier bars only for rows with a real goal; display-only
+                    // rows (calories/total_fat without a target) just feed the
+                    // Energy & macros card above.
+                    tier1 = comps.filter { it.tier == 1 && it.target > 0 }
+                        .sortedBy { it.coverage },
+                    otherTiers = comps.filter { it.tier != 1 && it.target > 0 }
                         .sortedWith(compareBy({ it.tier }, { it.coverage })),
                     calories = byId["calories"]?.let { it.intake to it.unit },
                     macros = listOf("protein", "carbohydrates", "total_fat")
@@ -181,9 +211,14 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                     unresolvedCount = _unresolved.value,
                     smartPicks = smartResult?.picks ?: emptyList(),
                     allSmartPicks = smartResult?.allPicks ?: emptyList(),
-                    smartPicksCacheCold = focus.isNotEmpty() &&
-                        (smartResult == null || smartResult.cacheCandidates <
-                            com.example.hoot.domain.insights.SmartFoodProvider.MIN_CANDIDATES)
+                    deepSmartPicks = smartResult?.deepPicks ?: emptyList(),
+                    // "Cache cold" now keys off the REAL scoreable pool (DB
+                    // cache + seed top-up): the raw DB-candidate count kept
+                    // the placeholder up although the bundled seed pool was
+                    // scoring fine (bug 2026-09-21).
+                    smartPicksCacheCold = focus.isNotEmpty() && smartResult != null &&
+                        smartResult.poolSize <
+                            com.example.hoot.domain.insights.SmartFoodProvider.MIN_CANDIDATES
                 )
                 kotlinx.coroutines.flow.flowOf(ui)
             }

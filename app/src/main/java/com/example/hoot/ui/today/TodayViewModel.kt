@@ -76,12 +76,17 @@ class TodayViewModel(app: Application) : AndroidViewModel(app) {
                     val target = com.example.hoot.ui.common.effectiveTarget(
                         def, goals[def.id]?.targetValue
                     )
-                    if (target <= 0.0) return@mapNotNull null
+                    // 0-kcal bug fix (2026-09-21): see HomeViewModel — keep
+                    // display-only rows (calories/total_fat have no seeded
+                    // RDA) when the ledger holds data for them.
+                    if (target <= 0.0 && totalMap[def.id] == null) return@mapNotNull null
                     val intake = totalMap[def.id] ?: 0.0
-                    val coverage = if (isLimit) {
-                        if (intake <= target) 1.0
+                    val coverage = when {
+                        target <= 0.0 -> 0.0        // no goal set — display-only row
+                        isLimit -> if (intake <= target) 1.0
                         else (1.0 - (intake - target) / (target * 0.5)).coerceIn(0.0, 1.0)
-                    } else (intake / target).coerceIn(0.0, 1.0)
+                        else -> (intake / target).coerceIn(0.0, 1.0)
+                    }
                     val exceeded = isLimit && intake > target ||
                         def.ulValue?.let { !isLimit && intake > it } == true
                     ScoreComponent(
@@ -104,8 +109,10 @@ class TodayViewModel(app: Application) : AndroidViewModel(app) {
                     day = day,
                     loading = false,
                     score = snapshot,
-                    tier1 = comps.filter { it.tier == 1 }.sortedBy { it.coverage },
-                    otherComponents = comps.filter { it.tier != 1 }
+                    // Tier bars only for rows with a real goal (see HomeViewModel).
+                    tier1 = comps.filter { it.tier == 1 && it.target > 0 }
+                        .sortedBy { it.coverage },
+                    otherComponents = comps.filter { it.tier != 1 && it.target > 0 }
                         .sortedWith(compareBy({ it.tier }, { it.coverage })),
                     calories = byId["calories"]?.let { it.intake to it.unit },
                     macros = listOf("protein", "carbohydrates", "total_fat")

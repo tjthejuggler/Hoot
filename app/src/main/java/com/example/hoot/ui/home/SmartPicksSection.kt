@@ -74,10 +74,15 @@ fun SmartPicksSection(
         when {
             picks.isNotEmpty() -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 picks.forEach { pick -> SmartPickRow(pick, onClick = { onOpenPick(pick) }) }
-                if (allPicks.size > picks.size) {
-                    TextButton(onClick = onSeeAll) {
-                        Text("See all ${allPicks.size} recommendations")
-                    }
+                // "More" entry point (feedback 2026-09-21): ALWAYS available —
+                // the popup is the full ranked list keyed to the current
+                // gaps, with "Show more" windowing and a "Generate even
+                // more" deep pass when the pool holds extra candidates.
+                TextButton(onClick = onSeeAll) {
+                    Text(
+                        if (allPicks.size > picks.size) "See all ${allPicks.size} recommendations"
+                        else "More recommendations"
+                    )
                 }
             }
             cacheCold && !loading -> Card(Modifier.fillMaxWidth()) {
@@ -100,6 +105,14 @@ fun SmartPicksSection(
  * keyed to. Rows reuse [SmartPickRow]; tapping one opens the same detail
  * sheet as the dashboard cards.
  */
+/**
+ * Full recommendations sheet (feedback 2026-09-21 "show more"): opens with a
+ * windowed slice of the ranked list and a "Show more" button that keeps
+ * growing it; when the standard ranking is exhausted, a deeper pass
+ * ([deepPicks] — quality floor fully relaxed, still instant + zero LLM)
+ * extends the list further. The button disappears only when every
+ * recommendation is visible.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AllSmartPicksSheet(
@@ -107,8 +120,20 @@ fun AllSmartPicksSheet(
     gaps: List<com.example.hoot.domain.insights.FocusNowItem>,
     loading: Boolean,
     onOpenPick: (SmartFoodPick) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    deepPicks: List<SmartFoodPick> = emptyList()
 ) {
+    // Continuous growth (quality rework 2026-09-22): "Show more" keeps
+    // revealing the ranked list in windows; when the standard floor runs
+    // out, the button switches to the deep pass (floor 0) and keeps going —
+    // the user can ALWAYS get more while candidates remain, with one honest
+    // end-state line when the pool is truly exhausted.
+    var showDeep by remember { mutableStateOf(false) }
+    var visibleCount by remember { mutableStateOf(SHEET_WINDOW) }
+    val source = if (showDeep && deepPicks.size > picks.size) deepPicks else picks
+    val visible = source.take(visibleCount)
+    val exhausted = visibleCount >= source.size &&
+        (!showDeep || deepPicks.size <= picks.size)
     ModalBottomSheet(onDismissRequest = onDismiss) {
         LazyColumn(
             modifier = Modifier.fillMaxWidth(),
@@ -132,7 +157,7 @@ fun AllSmartPicksSheet(
                     )
                 }
             }
-            if (picks.isEmpty() && !loading) {
+            if (source.isEmpty() && !loading) {
                 item {
                     Card(Modifier.fillMaxWidth()) {
                         EmptyState(
@@ -145,12 +170,37 @@ fun AllSmartPicksSheet(
                     }
                 }
             }
-            items(picks.size) { i ->
-                SmartPickRow(picks[i], onClick = { onOpenPick(picks[i]) })
+            items(visible.size) { i ->
+                SmartPickRow(visible[i], onClick = { onOpenPick(visible[i]) })
+            }
+            if (visibleCount < source.size) {
+                item {
+                    TextButton(onClick = { visibleCount += SHEET_WINDOW }) {
+                        Text("Show more (${source.size - visibleCount} left)")
+                    }
+                }
+            } else if (!showDeep && deepPicks.size > picks.size) {
+                item {
+                    TextButton(onClick = { showDeep = true; visibleCount += SHEET_WINDOW }) {
+                        Text("Show more — keep going (+${deepPicks.size - picks.size})")
+                    }
+                }
+            } else if (exhausted && source.isNotEmpty()) {
+                item {
+                    Text(
+                        "That's every food in your library that matches your " +
+                            "current gaps. Log more meals and new matches will appear.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
     }
 }
+
+/** Rows shown per "Show more" step in [AllSmartPicksSheet]. */
+private const val SHEET_WINDOW = 15
 
 /** One suggestion row: emoji, name, hits summary, serving + caution chip. */
 @Composable

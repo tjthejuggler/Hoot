@@ -36,6 +36,15 @@ class SmartFoodProvider(
 
         /** Max picks shown in the Home section (2026-09: widened from 6 per user request). */
         const val MAX_PICKS = 12
+
+        /**
+         * "Show more" flow (feedback 2026-09-21): the default ranking targets
+         * this many picks; [EXTENDED_MIN_SCORE] relaxes the quality floor
+         * when the default ranking comes up short. Zero LLM — depth comes
+         * from scoring the same pool more permissively.
+         */
+        const val EXTENDED_PICKS_TARGET = 24
+        const val EXTENDED_MIN_SCORE = 0.05
     }
 
     /** Outcome of one refresh — surfaced for logging/tests. */
@@ -50,7 +59,24 @@ class SmartFoodProvider(
         val allPicks: List<SmartFoodPick> = emptyList(),
         val gapCount: Int,
         val cacheCandidates: Int,
-        val llmUsed: Boolean
+        val llmUsed: Boolean,
+        /**
+         * Foods actually offered to the matcher: DB-cache candidates PLUS the
+         * seed top-up when the cache is thin. The UI cold-state must key off
+         * THIS pool, not [cacheCandidates] — the bundled seed guarantees a
+         * warm pool from the first launch, so the raw cache count kept the
+         * "Building your smart picks" placeholder up while picks scored fine
+         * (bug 2026-09-21).
+         */
+        val poolSize: Int = 0,
+        /**
+         * Deepest ranking (feedback 2026-09-21 "show more"): quality floor
+         * fully relaxed (minScore 0 — any diet-clean food covering ≥1 gap).
+         * Strict superset of [allPicks]; the sheet's "show even more" step
+         * hands this out. Always computed — scoring the ~hundreds-food pool
+         * is microseconds, and the memoized result keeps it free thereafter.
+         */
+        val deepPicks: List<SmartFoodPick> = emptyList()
     )
 
     // ---- Idempotency guard ------------------------------------------------------
@@ -151,29 +177,56 @@ class SmartFoodProvider(
             dislikes = merged.dislikes
         )
 
-        val candidates = cacheCandidates()
-        var pool = candidates
-        // ---- (d) Seed top-up (thin cache, zero LLM) --------------------------
-        if (candidates.size < MIN_CANDIDATES) {
-            val seedTopUp = seedTopUp(candidates)
-            if (seedTopUp.isNotEmpty()) pool = candidates + seedTopUp
+        // ---- (d) Pool assembly (quality-first rework 2026-09-22) -------------
+        // The bundled [SeedFoodLibrary] is ALWAYS in the pool — it is the
+        // curated, database-grade backbone of every recommendation list. DB
+        // rows join it only when they pass the plausibility gate, so a large
+        // but junky cache can no longer crowd the suggestions with garbage
+        // ("Dark Beverage") — the old thin-cache-only seed top-up meant a
+        // 465-row cache scored meal-title fragments instead of real foods.
+        val candidates = cacheCandidates().filter {
+            SmartFoodMatcher.isPlausibleFoodName(SmartFoodMatcher.cleanFoodName(it.displayName))
         }
+        val seed = seedTopUp(candidates)
+        val pool = candidates + seed
+
+        // Cleaned display names (feedback 2026-09-21): Tail/LLM segmentation
+        // artifacts ("Plus Seaweed Sheets.", "… (700 Kcal)") must not leak
+        // into suggestion cards. Cleaning is display-only — ids/keys keep the
+        // raw values so cache resolution stays stable.
+        val cleanedPool = pool.map { it.copy(displayName = SmartFoodMatcher.cleanFoodName(it.displayName)) }
+            // Plausibility gate (quality rework 2026-09-22): DB rows whose
+            // names are not concrete single foods ("Dark Beverage", compound
+            // meal titles) never become recommendations.
+            .filter { SmartFoodMatcher.isPlausibleFoodName(it.displayName) }
 
         // Home section: capped + diversity-de-duped.
-        val picks = SmartFoodMatcher.match(smartGaps, excesses, pool, dietFilter, MAX_PICKS)
-        // "See all" ranking (feedback 2026-09): same scoring, NO cap and NO
-        // diversity filter — a much longer list of specific foods keyed to
-        // the current long-term deficiencies. Cache-first, still zero LLM.
-        val allPicks = SmartFoodMatcher.match(smartGaps, excesses, pool, dietFilter, Int.MAX_VALUE)
+        val picks = SmartFoodMatcher.match(smartGaps, excesses, cleanedPool, dietFilter, MAX_PICKS)
+        // Sheet ranking (one continuous list, quality rework 2026-09-22): the
+        // FULL ranked set with the quality floor relaxed to [EXTENDED_MIN_SCORE]
+        // — the UI pages through it and, at the end, offers the deep pass
+        // (floor 0) for "keep going" growth. No more disjointed three-tier
+        // lists; the seed-anchored pool keeps every tier real foods.
+        val allPicks = SmartFoodMatcher.match(
+            smartGaps, excesses, cleanedPool, dietFilter,
+            Int.MAX_VALUE, minScore = EXTENDED_MIN_SCORE
+        )
+        val deepPicks = SmartFoodMatcher.match(
+            smartGaps, excesses, cleanedPool, dietFilter,
+            Int.MAX_VALUE, minScore = 0.0
+        )
 
         Log.i(
             TAG,
             "smartPicks($day): gaps=${smartGaps.size} excess=${excesses.size} " +
-                "cache=${candidates.size} seedTopUp=${candidates.size < MIN_CANDIDATES} " +
-                "picks=${picks.size} allPicks=${allPicks.size}"
+                "cacheOk=${candidates.size} seedTop=${seed.size} " +
+                "pool=${pool.size} picks=${picks.size} allPicks=${allPicks.size} " +
+                "deep=${deepPicks.size}"
         )
-        return SmartPicksResult(picks, allPicks, smartGaps.size, candidates.size, llmUsed = false)
-            .also { memo(sig, it) }
+        return SmartPicksResult(
+            picks, allPicks, smartGaps.size, candidates.size,
+            llmUsed = false, poolSize = pool.size, deepPicks = deepPicks
+        ).also { memo(sig, it) }
     }
 
     private fun memo(sig: String, result: SmartPicksResult) {

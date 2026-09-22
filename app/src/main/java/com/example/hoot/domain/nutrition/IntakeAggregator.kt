@@ -2,6 +2,7 @@ package com.example.hoot.domain.nutrition
 
 import android.util.Log
 import com.example.hoot.data.local.SettingsRepository
+import com.example.hoot.data.local.entity.MealEntity
 import com.example.hoot.data.local.entity.NutrientIntakeEntity
 import com.example.hoot.data.repository.MealRepository
 import com.example.hoot.data.repository.NutrientRepository
@@ -15,6 +16,8 @@ import java.util.UUID
  * per-nutrient-per-day intake ledger (docs/NUTRIENTS.md §7):
  *
  *   intake(D, N) = Σ meals: gramsEstimate(I)/perAmount × profile.valuesJson[N]
+ *                + Σ meals' structured macros (Tail v2 rows / v6 captures)
+ *                  for nutrients that meal's ingredients left uncovered
  *                + Σ supplements: nutrientContributions (canonical)
  *                + water: Σ tail_entries(kind="water") amounts (L, canonical)
  *
@@ -56,6 +59,10 @@ class IntakeAggregator(
 
             // ── Meals: ingredient grams × per-100 g profile ─────────────
             for (meal in meals.mealsByDay(day)) {
+                // Canonical nutrient ids THIS meal's ingredient rows actually
+                // produced (per-meal set — the structured-macro fill below
+                // must never double-count a nutrient the resolver credited).
+                val coveredByIngredients = HashSet<String>()
                 for (ing in meals.ingredientsForMeal(meal.id)) {
                     val profile = ing.foodId?.let { nutrients.profileForFood(it) } ?: continue
                     // gramsEstimate is written by the resolver at resolution
@@ -88,8 +95,20 @@ class IntakeAggregator(
                             sourceMealId = meal.id,
                             sourceSupplementId = null
                         )
+                        coveredByIngredients += nutrientId
                     }
                 }
+
+                // ── Structured-macro fill (Tail-sync bug 2026-09-21): Tail v2
+                // meal rows + v6 captures carry authoritative meal macros
+                // (kcal/protein/carbs/fat) that this aggregator previously
+                // IGNORED — a Tail meal whose text produced no resolvable
+                // ingredients credited ZERO protein/carbs, so Home showed
+                // "0 g carbs / 10 g protein" while Tail showed 105 g / 28 g.
+                // Credit each structured macro ONLY when the meal's
+                // ingredients produced nothing for that nutrient — no double
+                // count when both paths have data.
+                rows += structuredMacroRows(meal, day, coveredByIngredients, unitsById)
             }
 
             // ── Supplements: contributions already per-serving canonical ───
@@ -152,5 +171,43 @@ class IntakeAggregator(
 
     companion object {
         private const val TAG = "HootAggregator"
+
+        /**
+         * Structured-macro ledger rows for one meal (pure, JVM-testable):
+         * Tail v2 meal rows and v6 in-app captures store authoritative
+         * calories/protein/carbohydrates/total-fat directly on the meal row.
+         * Only nutrients with amount > 0 that [coveredByIngredients] does NOT
+         * already contain are credited (fill-missing, never double-count),
+         * each under a deterministic id so re-runs stay idempotent.
+         */
+        fun structuredMacroRows(
+            meal: MealEntity,
+            day: String,
+            coveredByIngredients: Set<String>,
+            canonicalUnits: Map<String, String>
+        ): List<NutrientIntakeEntity> {
+            val structured = listOf(
+                "calories" to meal.calories.toDouble(),
+                "protein" to meal.proteinGrams,
+                "carbohydrates" to meal.carbsGrams,
+                "total_fat" to meal.fatGrams
+            )
+            val out = ArrayList<NutrientIntakeEntity>(structured.size)
+            for ((nutrientId, amount) in structured) {
+                if (amount <= 0.0) continue                    // 0 = unknown (entity KDoc)
+                if (nutrientId in coveredByIngredients) continue
+                val unit = canonicalUnits[nutrientId] ?: continue
+                val canonical = Units.canonicalNutrientAmount(nutrientId, amount, null, unit) ?: continue
+                out += NutrientIntakeEntity(
+                    id = "macro:${meal.id}:$nutrientId",
+                    nutrientId = nutrientId,
+                    day = day,
+                    amount = canonical,
+                    sourceMealId = meal.id,
+                    sourceSupplementId = null
+                )
+            }
+            return out
+        }
     }
 }

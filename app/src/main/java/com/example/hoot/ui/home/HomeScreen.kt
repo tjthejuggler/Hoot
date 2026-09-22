@@ -145,6 +145,7 @@ fun HomeScreen(
     if (showAllPicks) {
         AllSmartPicksSheet(
             picks = state.allSmartPicks,
+            deepPicks = state.deepSmartPicks,
             gaps = state.focusNow,
             loading = state.loading,
             onOpenPick = { smartPickDetail = it },
