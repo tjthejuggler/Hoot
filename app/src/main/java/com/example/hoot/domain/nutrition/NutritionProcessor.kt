@@ -243,15 +243,6 @@ class NutritionProcessor(
                 progress.finish(applied > 0, group.displayName, group.touchedDays)
             }
             for (group in supplementGroups) {
-                val alreadyResolved = group.supplementIds.none { id ->
-                    meals.supplementsByIds(listOf(id)).firstOrNull()
-                        ?.let { it.nutrientContributions == "[]" && it.resolvedFoodId == null } == true
-                }
-                if (alreadyResolved && group.groupKey in cached.keys) {
-                    // Name-group resolved by an earlier pass this run.
-                    progress.finish(true, group.displayName, group.touchedDays)
-                    continue
-                }
                 // Free direct-label parse first (no LLM, no rate slot).
                 val outcome = resolver.resolveSupplementGroupSingle(
                     group.supplementIds, rateGuard = null, allowLlm = false
@@ -259,15 +250,23 @@ class NutritionProcessor(
                 if (outcome is NutritionResolver.ResolveOutcome.Resolved) {
                     progress.finish(true, group.displayName, group.touchedDays)
                 }
+                // Not-yet-resolved groups fall through to the Phase-2 LLM
+                // batches; nothing is stranded here anymore.
             }
             Log.i(TAG, "cache+label sweep done: ${cached.size} cache keys hit; 0 LLM calls so far")
 
             // ── Phase 2: re-hydrate what still needs an LLM panel ──────────
+            // NO cache-key filter: a cache-hit group whose profile could not
+            // be fully applied (key drift, partial bulk-apply, supplement
+            // group keys colliding with cached FOOD names) must still reach
+            // the LLM. The old `!in cached.keys` filter stranded those rows
+            // with no worker and no attempt-cap, so they re-queued on every
+            // fresh launch ("Analyzing nutrition… N foods left" chip with
+            // nothing new consumed — feedback 2026-09). Fully-applied groups
+            // drop out naturally: their rows are no longer unresolved.
             val remainingFoods = FoodGrouper.groupIngredients(unresolvedIngredientRows())
-                .filter { it.foodKey !in cached.keys }
                 .sortedByDescending { it.ingredientIds.size }   // biggest groups first
             val remainingSupps = FoodGrouper.groupSupplements(unresolvedSupplementRows())
-                .filter { it.groupKey !in cached.keys }
             val foodBatches = FoodGrouper.batch(remainingFoods, batchSize)
             val suppBatches = FoodGrouper.batch(remainingSupps, batchSize)
             Log.i(

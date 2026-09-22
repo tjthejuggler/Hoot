@@ -96,4 +96,20 @@ class TailMealIngredientMappingTest {
         assertEquals("[]", merged.nutrientContributions)
         assertEquals(null, merged.resolvedFoodId)
     }
+
+    @Test fun `unchanged unresolved text keeps its failure counter across re-sync`() {
+        // Tail re-serves the same full-history row on every sync; if the
+        // counter reset to 0, attempt-capped rows re-queued on EVERY app
+        // open (the "Analyzing nutrition…" countdown with nothing new).
+        val existing = freshSupp("s1").copy(resolveAttempts = 3)
+        val merged = MealRepository.mergePreservingResolved(freshSupp("s1"), existing)
+        assertEquals(3, merged.resolveAttempts)
+    }
+
+    @Test fun `changed unresolved text earns a fresh set of attempts`() {
+        val existing = freshSupp("s1").copy(resolveAttempts = 3)
+        val changed = freshSupp("s1").copy(rawText = "iron bisglycinate", label = "iron bisglycinate")
+        val merged = MealRepository.mergePreservingResolved(changed, existing)
+        assertEquals(0, merged.resolveAttempts)
+    }
 }

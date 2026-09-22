@@ -112,6 +112,9 @@ class MealRepository(
 
     // ---- Resolution-state-preserving ingest (restart re-analysis fix) -----
 
+    /** Rows that were GENUINELY NEW (unchanged re-served upserts excluded). */
+    data class IngestCounts(val meals: Int, val supplements: Int)
+
     /**
      * Upserts freshly-mapped Tail rows WITHOUT clobbering persisted
      * resolution state of rows already in the DB. Tail re-serves the same
@@ -124,21 +127,31 @@ class MealRepository(
      * [ingredients] (derived from Tail meal texts by the sync layer) are
      * inserted only for meals that have none yet — re-inserting would wipe
      * the `foodId` link on already-resolved rows.
+     *
+     * @return [IngestCounts] with only genuinely-new rows. Callers must not
+     * treat unchanged re-served upserts as "ingested" — the post-sync
+     * resolver kick would otherwise fire on every restart even when nothing
+     * new arrived (restart re-analysis bug, feedback 2026-09).
      */
     suspend fun ingestPreservingResolution(
         meals: List<MealEntity>,
         supplements: List<SupplementEntity>,
         ingredients: List<IngredientEntity> = emptyList()
-    ) {
+    ): IngestCounts {
+        var newSupplements = 0
         if (supplements.isNotEmpty()) {
             val ids = supplements.map { it.id }
             val existing = supplementDao.byIds(ids).associateBy { it.id }
+            newSupplements = supplements.count { it.id !in existing }
             val merged = supplements.map { fresh ->
                 existing[fresh.id]?.let { mergePreservingResolved(fresh, it) } ?: fresh
             }
             supplementDao.upsertAll(merged)
         }
+        var newMeals = 0
         if (meals.isNotEmpty()) {
+            val existingMealIds = mealDao.byIds(meals.map { it.id }).map { it.id }.toSet()
+            newMeals = meals.count { it.id !in existingMealIds }
             mealDao.upsertAll(meals)
             if (ingredients.isNotEmpty()) {
                 val mealsWithRows = allIngredientsForMeals(ingredients.map { it.mealId }.distinct())
@@ -147,6 +160,7 @@ class MealRepository(
                 if (fresh.isNotEmpty()) ingredientDao.insertAll(fresh)
             }
         }
+        return IngestCounts(meals = newMeals, supplements = newSupplements)
     }
 
     companion object {
@@ -157,10 +171,21 @@ class MealRepository(
          * Pure merge: when an existing row already carries resolution state
          * (contributions or a resolved food), the fresh Tail payload may only
          * refresh provenance (label/text/day/timestamp) — never reset it.
+         *
+         * UNRESOLVED rows keep their failure counter too when the underlying
+         * text is unchanged: Tail's full-history pull re-serves the same row
+         * on every pass, and returning `fresh` unconditionally reset
+         * `resolveAttempts` — attempt-capped rows were un-capped at every
+         * sync and re-queued forever (the "Analyzing nutrition… N foods
+         * left" chip on each fresh launch, feedback 2026-09). A genuinely
+         * changed text is a new input and earns fresh attempts.
          */
         fun mergePreservingResolved(fresh: SupplementEntity, existing: SupplementEntity): SupplementEntity {
             val alreadyResolved = existing.nutrientContributions != "[]" || existing.resolvedFoodId != null
-            if (!alreadyResolved) return fresh
+            if (!alreadyResolved) {
+                val sameText = fresh.rawText == existing.rawText && fresh.label == existing.label
+                return if (sameText) fresh.copy(resolveAttempts = existing.resolveAttempts) else fresh
+            }
             return fresh.copy(
                 resolvedFoodId = existing.resolvedFoodId,
                 nutrientContributions = existing.nutrientContributions,

@@ -34,7 +34,12 @@ sealed interface TailSyncState {
     /** [firstRun] = full-backlog pass (no persisted cursor yet). */
     data class Syncing(val firstRun: Boolean) : TailSyncState
 
-    /** [mealsInserted]/[supplementsInserted] are rows written (upserts counted). */
+    /**
+     * [mealsInserted]/[supplementsInserted] count GENUINELY-NEW rows only —
+     * unchanged re-served upserts are excluded so the post-sync resolver
+     * kick in [com.example.hoot.di.AppGraph] stays silent when nothing new
+     * arrived (restart re-analysis fix, 2026-09).
+     */
     data class Success(
         val mealsInserted: Int,
         val supplementsInserted: Int,
@@ -129,8 +134,8 @@ class TailSyncManager(
                             // meal texts give the resolver/aggregator rows to
                             // work with (bug: Today showed 0 for meal macros).
                             val ings = mealIngredientEntities(result.entries)
-                            meals.ingestPreservingResolution(rows, emptyList(), ings)
-                            mealsInserted = rows.size
+                            val counts = meals.ingestPreservingResolution(rows, emptyList(), ings)
+                            mealsInserted = counts.meals
                             syncedIds += rows.map { it.id }
                             tailConfig.updateSyncCursor(maxTs, null)
                         }
@@ -141,8 +146,8 @@ class TailSyncManager(
                             val history = tailClient.fetchFullHistory(pkg, mealHabit, cfg.lastMealSyncAt)
                             val (rows, maxTs) = textMealEntities(history.entries, mealHabit)
                             val ings = textMealIngredientEntities(history.entries, mealHabit)
-                            meals.ingestPreservingResolution(rows, emptyList(), ings)
-                            mealsInserted = rows.size
+                            val counts = meals.ingestPreservingResolution(rows, emptyList(), ings)
+                            mealsInserted = counts.meals
                             syncedIds += rows.map { it.id }
                             tailConfig.updateSyncCursor(maxTs, null)
                         }
@@ -155,8 +160,8 @@ class TailSyncManager(
                 if (pillsHabit != null) {
                     val history = tailClient.fetchFullHistory(pkg, pillsHabit, cfg.lastPillsSyncAt)
                     val (rows, maxTs) = supplementEntities(history.entries, pillsHabit)
-                    meals.ingestPreservingResolution(emptyList(), rows)
-                    supplementsInserted = rows.size
+                    val counts = meals.ingestPreservingResolution(emptyList(), rows)
+                    supplementsInserted = counts.supplements
                     syncedIds += rows.map { it.id }
                     tailConfig.updateSyncCursor(null, maxTs)
                 }
