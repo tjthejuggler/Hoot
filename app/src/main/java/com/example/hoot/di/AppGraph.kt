@@ -4,32 +4,40 @@ import android.content.Context
 import com.example.hoot.data.local.HootDatabase
 import com.example.hoot.data.local.SettingsRepository
 import com.example.hoot.data.remote.LlmClient
+import com.example.hoot.data.repository.FoodRepository
+import com.example.hoot.data.repository.IntakeRepository
+import com.example.hoot.data.repository.LookupCacheRepository
 import com.example.hoot.data.repository.LookupRepository
 import com.example.hoot.data.repository.MealRepository
+import com.example.hoot.data.repository.NutrientDefinitionRepository
 import com.example.hoot.data.repository.NutrientRepository
+import com.example.hoot.data.repository.RecommendationRepository
+import com.example.hoot.data.repository.ScoreSnapshotRepository
 import com.example.hoot.data.intake.IntakeCaptureService
+import com.example.hoot.data.repository.SupplementRepository
 import com.example.hoot.data.repository.TailConfigRepository
 import com.example.hoot.data.repository.TailEntryRepository
 import com.example.hoot.data.tail.EchoRegistry
 import com.example.hoot.data.tail.TailClient
 import com.example.hoot.data.tail.TailPushClient
 import com.example.hoot.data.tail.TailSyncManager
-import com.example.hoot.data.tail.TailSyncState
 import com.example.hoot.domain.insights.RecommendationEngine
 import com.example.hoot.domain.insights.SmartFoodProvider
 import com.example.hoot.domain.nutrition.IntakeAggregator
-import com.example.hoot.domain.nutrition.NutritionProcessState
 import com.example.hoot.domain.nutrition.NutritionProcessor
 import com.example.hoot.domain.nutrition.NutritionResolver
 import com.example.hoot.domain.score.ScoreSnapshotter
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.launch
 
-/** Hand-rolled DI graph — small app, no framework needed (mirrors Inuit). */
+/**
+ * Hand-rolled DI graph — small app, no framework needed (mirrors Inuit).
+ *
+ * Wiring only: every `val` constructs one collaborator; cross-engine
+ * reactions (sync→ingest, drain→refresh, self-heals, diet guard) live in
+ * [NutritionPipeline] and are started at the bottom of the constructor.
+ */
 class AppGraph(context: Context) {
     val appContext: Context = context.applicationContext
     val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -46,18 +54,30 @@ class AppGraph(context: Context) {
         EchoRegistry.init(appContext)
     }
 
-    init {
-        // Echo-registry warm-up BEFORE any sync/pull can run: the filter set
-        // is what keeps Hoot's own pushed rows from re-ingesting as echoes.
-        EchoRegistry.init(appContext)
-    }
-
     // ---- Repositories (thin, over DAOs / DataStore) ----------------------
     val meals = MealRepository(
         database.mealDao(),
         database.ingredientDao(),
         database.supplementDao()
     )
+
+    // Concern-scoped nutrient-domain repositories (refactor 2026-09-22, P2).
+    val nutrientDefinitions = NutrientDefinitionRepository(
+        database.nutrientDao(),
+        database.nutrientGoalDao()
+    )
+    val intakeRepo = IntakeRepository(database.intakeDao())
+    val foods = FoodRepository(database.foodDao(), database.profileDao())
+    val lookupCache = LookupCacheRepository(database.lookupCacheDao(), database.sourceDao())
+    val supplements = SupplementRepository(database.supplementDao())
+    val recommendations = RecommendationRepository(database.recommendationDao())
+    val scoreSnapshots = ScoreSnapshotRepository(database.scoreSnapshotDao())
+
+    /**
+     * Deprecated catch-all facade over the seven repositories above. Kept
+     * only while call sites migrate; new code should take the narrow repo.
+     */
+    @Deprecated("Use the concern-scoped repositories above")
     val nutrients = NutrientRepository(
         database.nutrientDao(),
         database.nutrientGoalDao(),
@@ -70,6 +90,7 @@ class AppGraph(context: Context) {
         database.recommendationDao(),
         database.scoreSnapshotDao()
     )
+
     val lookups = LookupRepository(
         database.lookupCacheDao(),
         database.profileDao(),
@@ -193,7 +214,7 @@ class AppGraph(context: Context) {
      * Per-DISTINCT-FOOD background queue draining unresolved ingredients +
      * supplements (grouped by normalized foodKey, cache-first, batched LLM
      * calls, 3 parallel workers, sliding-minute rate guard); exposes
-     * [NutritionProcessor.state] for the Today chip.
+     * [NutritionProcessor.state] for the processing chip.
      */
     val nutritionProcessor = NutritionProcessor(
         resolver = nutritionResolver,
@@ -203,99 +224,26 @@ class AppGraph(context: Context) {
         scope = appScope
     )
 
-    init {
-        // After each Tail sync that ingested rows, resolve what's pending.
-        appScope.launch {
-            tailSync.syncState.collect { state ->
-                val ingested = state as? TailSyncState.Success ?: return@collect
-                if (ingested.mealsInserted > 0 || ingested.supplementsInserted > 0) {
-                    nutritionProcessor.kick()
-                }
-            }
-        }
-        // Phase 4: whenever the nutrition queue drains, refresh score
-        // snapshots for all known days (idempotent) and re-issue open
-        // recommendations for today's gaps.
-        appScope.launch {
-            var wasProcessing = false
-            nutritionProcessor.state.collect { state ->
-                val processing = state is NutritionProcessState.Processing
-                if (wasProcessing && !processing) {
-                    runCatching {
-                        scoreSnapshotter.recomputeAll()
-                        recommendForToday()
-                    }.onFailure { android.util.Log.e("HootGraph", "post-drain refresh failed", it) }
-                }
-                wasProcessing = processing
-            }
-        }
-        // Legacy-backlog self-heal: parse ingredient rows for Tail meals that
-        // predate the ingredient-derivation fix (their sync cursors already
-        // advanced past them), then kick() queues the new rows for resolution.
-        // Cheap + idempotent: the orphan query returns nothing once repaired.
-        appScope.launch {
-            runCatching {
-                nutritionProcessor.backfillMissingIngredients()
-            }.onFailure { android.util.Log.e("HootGraph", "ingredient backfill failed", it) }
-        }
-        // Ledger self-heal (water + fiber/iodine backfill): recomputes every
-        // known day once per install of this build so days whose sync cursors
-        // already advanced past their water rows (and profiles carrying
-        // legacy "fibre"/"iodide" keys) get correct ledger values without any
-        // user action. Idempotent — the per-day wipe-and-rewrite converges.
-        appScope.launch {
-            runCatching {
-                intakeAggregator.recomputeDays(null)
-                scoreSnapshotter.recomputeAll()
-            }.onFailure { android.util.Log.e("HootGraph", "ledger self-heal failed", it) }
-        }
-        // Drain anything left unresolved from previous runs at startup. With
-        // resolution state persisted (and preserving re-ingest), this enqueues
-        // ZERO items when everything is already resolved — no network work on
-        // restart; only genuinely-pending rows (< attempt cap) are queued.
-        nutritionProcessor.kick()
-        // Diet guard (diet-fix hardening, 2026-09): on STARTUP and on EVERY
-        // dietary-profile change (DataStore or Room mirror), purge persisted
-        // `recommendation_log` rows whose food/reason text violates the
-        // CURRENT profile (pre-fix rows, or LLM output that ignored the
-        // constraints) and regenerate today's recommendations against it.
-        // Without this, stale omnivore suggestions leak onto the Insights
-        // carousel and the nutrient detail sheet forever.
-        appScope.launch {
-            combine(settings.settings, tailConfig.observeDietaryProfile()) { s, room ->
-                com.example.hoot.domain.insights.DietTextFilter.merged(
-                    datastoreStyle = s.dietStyle,
-                    datastoreAllergies = s.dietAllergies,
-                    datastoreDislikes = s.dietDislikes,
-                    roomStyle = room?.dietStyle,
-                    roomAllergies = jsonList(room?.allergiesJson),
-                    roomDislikes = jsonList(room?.dislikesJson)
-                )
-            }.distinctUntilChanged().collect { filter ->
-                runCatching {
-                    nutrients.purgeDietViolatingRecommendations(filter.toProfile())
-                    recommendForToday()
-                }.onFailure { android.util.Log.e("HootGraph", "diet guard refresh failed", it) }
-            }
-        }
-    }
-
-    /** `["a","b"]` → [a, b]; tolerant of null/blank/invalid JSON. */
-    private fun jsonList(raw: String?): List<String> = runCatching {
-        val arr = org.json.JSONArray(raw ?: "[]")
-        (0 until arr.length()).mapNotNull { arr.optString(it).takeIf { s -> s.isNotBlank() } }
-    }.getOrDefault(emptyList())
+    /**
+     * Cross-engine reactions (sync→ingest, drain→refresh, startup self-heals,
+     * diet guard) — started here so this class stays a pure object table.
+     */
+    private val nutritionPipeline = NutritionPipeline(
+        scope = appScope,
+        tailSync = tailSync,
+        nutritionProcessor = nutritionProcessor,
+        intakeAggregator = intakeAggregator,
+        scoreSnapshotter = scoreSnapshotter,
+        settings = settings,
+        tailConfig = tailConfig,
+        nutrients = nutrients,
+        recommendationEngine = recommendationEngine
+    )
 
     /**
-     * Issues/refreshes today's recommendations — cache-first foods, plus one
-     * batched LLM call only when the LLM is configured. Never throws;
-     * callers log failures.
+     * Issues/refreshes today's recommendations (delegates to the pipeline).
+     * Called by [com.example.hoot.ui.settings.SettingsViewModel] after goal /
+     * profile edits. Never throws.
      */
-    suspend fun recommendForToday() {
-        runCatching {
-            recommendationEngine.generateForDay(
-                com.example.hoot.domain.nutrition.DayKeys.todayKey()
-            )
-        }
-    }
+    suspend fun recommendForToday() = nutritionPipeline.recommendForToday()
 }

@@ -1,7 +1,6 @@
 package com.example.hoot.data.repository
 
 import com.example.hoot.data.local.dao.FoodDao
-import com.example.hoot.data.local.dao.IngredientDao
 import com.example.hoot.data.local.dao.IntakeDao
 import com.example.hoot.data.local.dao.LookupCacheDao
 import com.example.hoot.data.local.dao.NutrientDao
@@ -20,197 +19,179 @@ import com.example.hoot.data.local.entity.NutrientGoalEntity
 import com.example.hoot.data.local.entity.NutrientIntakeEntity
 import com.example.hoot.data.local.entity.RecommendationEntity
 import com.example.hoot.domain.insights.DietProfile
-import com.example.hoot.domain.insights.DietRules
 import com.example.hoot.data.local.entity.ScoreSnapshotEntity
 import com.example.hoot.data.local.entity.SourceEntity
 import com.example.hoot.data.local.entity.SupplementEntity
 import kotlinx.coroutines.flow.Flow
 
 /**
- * Facade over the nutrient-domain DAOs: definitions, goals, intake ledger,
- * resolved food profiles + cache + sources, recommendations, score history.
- * Aggregation-ready queries ([dailyTotals]/[rangeTotals]) back the phase-3
- * ScoreEngine.
+ * DEPRECATED facade over the seven concern-scoped repositories that replaced
+ * this god-repository (refactor 2026-09-22, docs/REFACTORING_PLAN.md P2):
+ * [NutrientDefinitionRepository], [IntakeRepository], [FoodRepository],
+ * [LookupCacheRepository], [SupplementRepository], [RecommendationRepository],
+ * [ScoreSnapshotRepository].
+ *
+ * Kept ONLY so existing call sites ([com.example.hoot.di.AppGraph] and the
+ * ViewModels/engines) keep compiling while they migrate; every member is a
+ * one-line delegation. New code must depend on the narrow repository it
+ * needs. Delete once no caller remains.
  */
+@Deprecated("Use the concern-scoped repositories instead (see class KDoc)")
 class NutrientRepository(
-    private val nutrientDao: NutrientDao,
-    private val goalDao: NutrientGoalDao,
-    private val intakeDao: IntakeDao,
-    private val foodDao: FoodDao,
-    private val profileDao: ProfileDao,
-    private val lookupCacheDao: LookupCacheDao,
-    private val sourceDao: SourceDao,
-    private val supplementDao: SupplementDao,
-    private val recommendationDao: RecommendationDao,
-    private val scoreSnapshotDao: ScoreSnapshotDao
+    nutrientDao: NutrientDao,
+    goalDao: NutrientGoalDao,
+    intakeDao: IntakeDao,
+    foodDao: FoodDao,
+    profileDao: ProfileDao,
+    lookupCacheDao: LookupCacheDao,
+    sourceDao: SourceDao,
+    supplementDao: SupplementDao,
+    recommendationDao: RecommendationDao,
+    scoreSnapshotDao: ScoreSnapshotDao
 ) {
+    val definitions = NutrientDefinitionRepository(nutrientDao, goalDao)
+    val intake = IntakeRepository(intakeDao)
+    val foods = FoodRepository(foodDao, profileDao)
+    val lookupCache = LookupCacheRepository(lookupCacheDao, sourceDao)
+    val supplements = SupplementRepository(supplementDao)
+    val recommendations = RecommendationRepository(recommendationDao)
+    val scoreSnapshots = ScoreSnapshotRepository(scoreSnapshotDao)
+
     // ---- Definitions -------------------------------------------------------
-    fun observeDefinitions(): Flow<List<NutrientDefinitionEntity>> = nutrientDao.observeAll()
+    fun observeDefinitions(): Flow<List<NutrientDefinitionEntity>> = definitions.observeDefinitions()
 
-    suspend fun definition(id: String): NutrientDefinitionEntity? = nutrientDao.byId(id)
+    suspend fun definition(id: String): NutrientDefinitionEntity? = definitions.definition(id)
 
-    suspend fun definitionsAll(): List<NutrientDefinitionEntity> = nutrientDao.all()
+    suspend fun definitionsAll(): List<NutrientDefinitionEntity> = definitions.definitionsAll()
 
     suspend fun definitionsByIds(ids: List<String>): List<NutrientDefinitionEntity> =
-        nutrientDao.byIds(ids)
+        definitions.definitionsByIds(ids)
 
-    suspend fun definitionCount(): Int = nutrientDao.count()
+    suspend fun definitionCount(): Int = definitions.definitionCount()
 
     // ---- Goals ---------------------------------------------------------
-    fun observeGoals(): Flow<List<NutrientGoalEntity>> = goalDao.observeAll()
+    fun observeGoals(): Flow<List<NutrientGoalEntity>> = definitions.observeGoals()
 
-    suspend fun goal(nutrientId: String): NutrientGoalEntity? = goalDao.byNutrientId(nutrientId)
+    suspend fun goal(nutrientId: String): NutrientGoalEntity? = definitions.goal(nutrientId)
 
-    suspend fun upsertGoal(goal: NutrientGoalEntity) = goalDao.upsert(goal)
+    suspend fun upsertGoal(goal: NutrientGoalEntity) = definitions.upsertGoal(goal)
 
-    /** Reset one nutrient to its RDA default (removes the custom goal row). */
-    suspend fun deleteGoal(nutrientId: String) = goalDao.deleteForNutrient(nutrientId)
+    suspend fun deleteGoal(nutrientId: String) = definitions.deleteGoal(nutrientId)
+
+    suspend fun goalsAll(): List<NutrientGoalEntity> = definitions.goalsAll()
+
+    suspend fun upsertGoals(goals: List<NutrientGoalEntity>) = definitions.upsertGoals(goals)
 
     // ---- Intake ledger -------------------------------------------------
     fun observeIntakeByDay(day: String): Flow<List<NutrientIntakeEntity>> =
-        intakeDao.observeByDay(day)
+        intake.observeIntakeByDay(day)
 
     fun observeIntakeRange(from: String, to: String): Flow<List<NutrientIntakeEntity>> =
-        intakeDao.observeRange(from, to)
+        intake.observeIntakeRange(from, to)
 
-    suspend fun dailyTotals(day: String): List<NutrientDayTotal> = intakeDao.dailyTotals(day)
+    suspend fun dailyTotals(day: String): List<NutrientDayTotal> = intake.dailyTotals(day)
 
-    /** Per-meal contribution ranking for one nutrient over a window (top sources). */
     suspend fun mealContributions(
         nutrientId: String,
         from: String,
         to: String
     ): List<com.example.hoot.data.local.dao.MealContribution> =
-        intakeDao.mealContributions(nutrientId, from, to)
-
-    suspend fun lookupKeyForFood(foodId: String): com.example.hoot.data.local.entity.LookupCacheEntity? =
-        lookupCacheDao.byResolvedFoodId(foodId).firstOrNull()
+        intake.mealContributions(nutrientId, from, to)
 
     suspend fun rangeTotals(from: String, to: String): List<NutrientDayTotal> =
-        intakeDao.rangeTotals(from, to)
+        intake.rangeTotals(from, to)
 
-    /** Per-(nutrient, day) totals across a window (history series). */
     suspend fun dailyTotalsForWindow(from: String, to: String): List<NutrientDayTotal> =
-        intakeDao.dailyTotalsRange(from, to)
+        intake.dailyTotalsForWindow(from, to)
 
-    suspend fun logIntake(entries: List<NutrientIntakeEntity>) = intakeDao.upsertAll(entries)
+    suspend fun logIntake(entries: List<NutrientIntakeEntity>) = intake.logIntake(entries)
 
-    suspend fun clearIntakeForMeal(mealId: String) = intakeDao.deleteForMeal(mealId)
+    suspend fun clearIntakeForMeal(mealId: String) = intake.clearIntakeForMeal(mealId)
 
     suspend fun clearIntakeForSupplement(supplementId: String) =
-        intakeDao.deleteForSupplement(supplementId)
+        intake.clearIntakeForSupplement(supplementId)
 
-    /** Idempotent per-day recompute: wipe the day's ledger before re-aggregation. */
-    suspend fun clearIntakeForDay(day: String) = intakeDao.deleteForDay(day)
+    suspend fun clearIntakeForDay(day: String) = intake.clearIntakeForDay(day)
+
+    fun observeDailyTotals(day: String): Flow<List<NutrientDayTotal>> =
+        intake.observeDailyTotals(day)
+
+    fun observeDailyTotalsRange(from: String, to: String): Flow<List<NutrientDayTotal>> =
+        intake.observeDailyTotalsRange(from, to)
 
     // ---- Foods / profiles / cache / sources -------------------------------
-    fun observeFoods(): Flow<List<FoodEntity>> = foodDao.observeFoods()
+    fun observeFoods(): Flow<List<FoodEntity>> = foods.observeFoods()
 
-    suspend fun food(id: String): FoodEntity? = foodDao.byId(id)
+    suspend fun food(id: String): FoodEntity? = foods.food(id)
 
-    suspend fun foodByName(normalizedName: String): FoodEntity? =
-        foodDao.byNormalizedName(normalizedName)
+    suspend fun foodByName(normalizedName: String): FoodEntity? = foods.foodByName(normalizedName)
 
-    suspend fun foodsAll(): List<FoodEntity> = foodDao.all()
+    suspend fun foodsAll(): List<FoodEntity> = foods.foodsAll()
 
-    suspend fun upsertFood(food: FoodEntity) = foodDao.upsert(food)
+    suspend fun upsertFood(food: FoodEntity) = foods.upsertFood(food)
 
     suspend fun profileForFood(foodId: String): FoodNutrientProfileEntity? =
-        profileDao.forFood(foodId)
+        foods.profileForFood(foodId)
 
-    suspend fun profileById(id: String): FoodNutrientProfileEntity? = profileDao.byId(id)
+    suspend fun profileById(id: String): FoodNutrientProfileEntity? = foods.profileById(id)
 
-    suspend fun upsertProfile(profile: FoodNutrientProfileEntity) = profileDao.upsert(profile)
+    suspend fun upsertProfile(profile: FoodNutrientProfileEntity) = foods.upsertProfile(profile)
 
-    suspend fun cacheLookup(key: String): LookupCacheEntity? = lookupCacheDao.byKey(key)
+    suspend fun cacheLookup(key: String): LookupCacheEntity? = lookupCache.byKey(key)
 
-    suspend fun cachePut(entry: LookupCacheEntity) = lookupCacheDao.upsert(entry)
+    suspend fun cachePut(entry: LookupCacheEntity) = lookupCache.upsert(entry)
 
-    /** Popularity telemetry on cache hit (ARCHITECTURE.md §5). */
-    suspend fun cacheHit(key: String) = lookupCacheDao.incrementHitCount(key)
+    suspend fun cacheHit(key: String) = lookupCache.incrementHitCount(key)
 
-    suspend fun cacheStats(): Triple<Int, Long?, Long?> = Triple(
-        lookupCacheDao.count(),
-        lookupCacheDao.oldestFetchedAt(),
-        lookupCacheDao.newestFetchedAt()
-    )
+    suspend fun cacheStats(): Triple<Int, Long?, Long?> = lookupCache.cacheStats()
+
+    suspend fun lookupKeyForFood(foodId: String): LookupCacheEntity? =
+        lookupCache.lookupKeyForFood(foodId)
 
     suspend fun sourcesForLookup(lookupKey: String): List<SourceEntity> =
-        sourceDao.forLookup(lookupKey)
+        lookupCache.sourcesForLookup(lookupKey)
 
-    suspend fun recordSources(sources: List<SourceEntity>) = sourceDao.insertAll(sources)
+    suspend fun recordSources(sources: List<SourceEntity>) = lookupCache.recordSources(sources)
 
     // ---- Supplements (contribution parsing) --------------------------------
-    suspend fun supplementByLabel(label: String): SupplementEntity? =
-        supplementDao.byLabel(label)
+    suspend fun supplementByLabel(label: String): SupplementEntity? = supplements.byLabel(label)
 
-    suspend fun upsertSupplement(supplement: SupplementEntity) = supplementDao.upsert(supplement)
+    suspend fun upsertSupplement(supplement: SupplementEntity) = supplements.upsert(supplement)
 
     // ---- Recommendations -----------------------------------------------
     fun observeOpenRecommendations(limit: Int = 10): Flow<List<RecommendationEntity>> =
-        recommendationDao.observeOpen(limit)
+        recommendations.observeOpen(limit)
 
     fun observeRecentRecommendations(limit: Int = 20): Flow<List<RecommendationEntity>> =
-        recommendationDao.observeRecent(limit)
+        recommendations.observeRecent(limit)
 
-    suspend fun recommendation(id: String): RecommendationEntity? = recommendationDao.byId(id)
+    suspend fun recommendation(id: String): RecommendationEntity? = recommendations.byId(id)
 
     suspend fun recommendationsBetween(from: String, to: String): List<RecommendationEntity> =
-        recommendationDao.between(from, to)
+        recommendations.between(from, to)
 
     suspend fun setRecommendationAccepted(id: String, accepted: Boolean?) =
-        recommendationDao.setAccepted(id, accepted)
+        recommendations.setAccepted(id, accepted)
 
     suspend fun upsertRecommendation(recommendation: RecommendationEntity) =
-        recommendationDao.upsert(recommendation)
+        recommendations.upsert(recommendation)
 
-    /**
-     * Diet-violation purge (diet-fix hardening, 2026-09): deletes every
-     * persisted recommendation row whose food name or reason text violates
-     * [profile]. Rows are re-issued against the CURRENT profile by
-     * [com.example.hoot.domain.insights.RecommendationEngine.generateForDay]
-     * (kick it after purging), so nothing but diet-incompatible suggestions
-     * is lost. Returns the number of rows removed (0 on empty input).
-     */
-    suspend fun purgeDietViolatingRecommendations(profile: DietProfile): Int {
-        val violating = recommendationDao.all().filter {
-            !DietRules.allowsFood(it.foodName, profile) ||
-                !DietRules.allowsFood(it.reasonText, profile)
-        }.map { it.id }
-        if (violating.isEmpty()) return 0
-        recommendationDao.deleteByIds(violating)
-        return violating.size
-    }
+    suspend fun purgeDietViolatingRecommendations(profile: DietProfile): Int =
+        recommendations.purgeDietViolating(profile)
 
     suspend fun recommendationCountsBetween(
         from: String,
         to: String
-    ): Triple<Int, Int, Int> = Triple(
-        recommendationDao.countBetween(from, to),
-        recommendationDao.acceptedCount(from, to),
-        recommendationDao.answeredCount(from, to)
-    )
+    ): Triple<Int, Int, Int> = recommendations.countsBetween(from, to)
 
     suspend fun recommendedNutrientIdsForDay(day: String): List<String> =
-        recommendationDao.nutrientIdsForDay(day)
+        recommendations.nutrientIdsForDay(day)
 
     // ---- Score history -------------------------------------------------
-    suspend fun snapshot(day: String): ScoreSnapshotEntity? = scoreSnapshotDao.byDay(day)
+    suspend fun snapshot(day: String): ScoreSnapshotEntity? = scoreSnapshots.byDay(day)
 
     fun observeScoreHistory(from: String): Flow<List<ScoreSnapshotEntity>> =
-        scoreSnapshotDao.observeFrom(from)
+        scoreSnapshots.observeFrom(from)
 
-    suspend fun upsertSnapshot(snapshot: ScoreSnapshotEntity) = scoreSnapshotDao.upsert(snapshot)
-
-    /** Reactive per-nutrient totals for one day (dashboard bars). */
-    fun observeDailyTotals(day: String): Flow<List<NutrientDayTotal>> =
-        intakeDao.observeDailyTotals(day)
-
-    /** Reactive per-(nutrient, day) totals across a range (history charts). */
-    fun observeDailyTotalsRange(from: String, to: String): Flow<List<NutrientDayTotal>> =
-        intakeDao.observeDailyTotalsRange(from, to)
-
-    suspend fun goalsAll(): List<NutrientGoalEntity> = goalDao.all()
-
-    suspend fun upsertGoals(goals: List<NutrientGoalEntity>) = goalDao.upsertAll(goals)
+    suspend fun upsertSnapshot(snapshot: ScoreSnapshotEntity) = scoreSnapshots.upsert(snapshot)
 }

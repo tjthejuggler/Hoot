@@ -51,7 +51,6 @@ import com.example.hoot.ui.insights.InsightsScreen
 import com.example.hoot.ui.intake.IntakeScreen
 import com.example.hoot.ui.settings.SettingsScreen
 import com.example.hoot.ui.tail.TailSetupScreen
-import com.example.hoot.ui.today.TodayScreen
 
 /**
  * Type-safe route names for the four top-level destinations (UI overhaul
@@ -162,9 +161,9 @@ fun HootNavHost(navController: NavHostController = rememberNavController()) {
                     onOpenTailSetup = { navController.navigate(ROUTE_TAIL_SETUP) { launchSingleTop = true } }
                 )
             }
-            // Legacy alias: same screen, so old back-stack entries still work.
+            // Legacy alias: same screen as HOME, so old back-stack entries work.
             composable(ROUTE_TODAY_ALIAS) {
-                TodayScreen(
+                HomeScreen(
                     onOpenHistory = { navController.navigate(HootRoute.HISTORY.name) { launchSingleTop = true } },
                     onOpenInsights = { navController.navigate(HootRoute.INSIGHTS.name) { launchSingleTop = true } },
                     onOpenTailSetup = { navController.navigate(ROUTE_TAIL_SETUP) { launchSingleTop = true } }
