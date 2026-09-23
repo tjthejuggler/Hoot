@@ -80,6 +80,19 @@ fun NutrientDetailSheet(
                         } else "",
                     style = MaterialTheme.typography.bodyMedium
                 )
+                // Week + month coverage (feedback 2026-09-23): avg % of target
+                // across logged days for each trailing window.
+                if (state.windows.isNotEmpty()) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        state.windows.joinToString("  ·  ") { w ->
+                            if (!w.hasData) "${w.label}: no data"
+                            else "${w.label}: ${w.pct}% of target"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
             // Situation-aware card (feedback: symptoms of too little, effects
             // of too much): deficient vs target → deficiency symptoms;

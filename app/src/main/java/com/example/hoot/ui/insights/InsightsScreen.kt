@@ -48,9 +48,6 @@ import coil3.request.ImageRequest
 import coil3.request.error
 import coil3.request.crossfade
 import com.example.hoot.data.local.entity.RecommendationEntity
-import com.example.hoot.domain.insights.Insight
-import com.example.hoot.domain.insights.InsightKind
-import com.example.hoot.domain.insights.InsightSeverity
 import com.example.hoot.ui.charts.BarChart
 import com.example.hoot.ui.charts.LineChart
 import com.example.hoot.ui.charts.RadarChart
@@ -210,13 +207,19 @@ fun InsightsScreen(
             }
         }
 
-        // ---- Deficiencies / excess (ALL tiers, filterable, actionable) -------------
+        // ---- Nutrient report card (letter grades, worst-first) ---------------------
+        // Feedback 2026-09-23: the ambiguous high/watch/info chips are gone.
+        // EVERY nutrient from the complete list gets an F–A grade over the
+        // active window (direction-agnostic: too low AND too high both hurt).
+        // F rows come first; the A rows stay collapsed behind "Show more".
         item {
+            var showASection by remember { mutableStateOf(false) }
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp)) {
                     SectionHeader(
-                        "What stands out",
-                        "Persistent gaps and over-limits across ALL tiers."
+                        "Nutrient report card",
+                        "Every nutrient graded F–A for this window — being too low " +
+                            "or too high both hurt the grade."
                     )
                     Spacer(Modifier.height(8.dp))
                     // Tier filter chips: All / T1 / T2 / T3.
@@ -235,24 +238,34 @@ fun InsightsScreen(
                         }
                     }
                     Spacer(Modifier.height(8.dp))
-                    val relevant = state.insights.filter {
-                        it.kind == InsightKind.DEFICIENCY || it.kind == InsightKind.EXCESS
+                    val visibleGrades = state.gradeRowsVisible.filter {
+                        state.tierFilter == null || it.tier == state.tierFilter
                     }
-                    if (relevant.isEmpty()) {
+                    val aGrades = state.gradeRowsHiddenA.filter {
+                        state.tierFilter == null || it.tier == state.tierFilter
+                    }
+                    if (visibleGrades.isEmpty() && aGrades.isEmpty()) {
                         Text(
-                            "No persistent gaps or excesses detected in this tier.",
+                            "No graded nutrients yet — log a few days of meals.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    relevant.forEach { insight ->
-                        Box(Modifier.clickable {
-                            insight.nutrientId?.let { detailNutrientId = it }
-                        }) {
-                            InsightCard(
-                                insight,
-                                tier = insight.nutrientId?.let { state.tierById[it] },
-                                dietFilter = state.dietFilter
+                    visibleGrades.forEach { row ->
+                        GradeRow(row, onClick = { detailNutrientId = row.nutrientId })
+                    }
+                    // The A list: hidden by default, viewable on demand — the
+                    // "what I'm doing well at" section.
+                    if (aGrades.isNotEmpty() && showASection) {
+                        aGrades.forEach { row ->
+                            GradeRow(row, onClick = { detailNutrientId = row.nutrientId })
+                        }
+                    }
+                    if (aGrades.isNotEmpty()) {
+                        TextButton(onClick = { showASection = !showASection }) {
+                            Text(
+                                if (showASection) "Hide the A list"
+                                else "Show more — ${aGrades.size} you're acing (A)"
                             )
                         }
                     }

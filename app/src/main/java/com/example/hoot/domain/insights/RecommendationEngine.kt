@@ -94,13 +94,17 @@ class RecommendationEngine(
         val needLlm = ArrayList<Pair<Gap, Int>>()   // gap → how many more foods needed
 
         // ---- Pass 1: local profiles rich in the lacking nutrient ------------
+        // Quality engine (2026-09-23): findCachedSources name-gates, ranks by
+        // PER-SERVING % of target (not per-100g), and enforces the density
+        // floor — vague/weak rows ("herbs and seasonings" at 1%) never issue.
         for (gap in gaps) {
-            val candidates = findCachedSources(gap.id, dietStyle, allergies, dislikes)
+            val candidates = findCachedSources(gap.id, dietStyle, allergies, dislikes, gap.target)
             cachedFoods += candidates.size
             val take = min(candidates.size, foodsPerNutrient)
-            for (i in 0 until take) {
-                val (food, perAmount, value) = candidates[i]
-                if (issue(gap, day, food.displayName, reason(gap, value, perAmount, food), null)) issued++
+            for (cand in candidates.take(take)) {
+                if (issue(gap, day, cand.food.displayName, reason(gap, cand.per100, cand.perAmount, cand.food), null)) {
+                    issued++
+                }
             }
             if (take < foodsPerNutrient) needLlm += gap to (foodsPerNutrient - take)
         }
@@ -114,9 +118,13 @@ class RecommendationEngine(
                 val generated = runCatching { generateViaLlm(cfg, s, dietStyle, allergies, dislikes, needLlm) }
                     .onFailure { Log.w(TAG, "LLM recommendation batch failed: ${it.message}") }
                     .getOrDefault(emptyList())
-                    // Defensive gate: LLMs occasionally ignore diet_style — a
-                    // violating suggestion must never reach the ledger.
-                    .filter { DietRules.allowsFood(it.foodName, dietStyle, allergies, dislikes) }
+                    // Defensive gates: LLMs occasionally ignore diet_style AND
+                    // emit vague category names ("herbs and seasonings") —
+                    // neither may reach the ledger (quality engine 2026-09-23).
+                    .filter {
+                        DietRules.allowsFood(it.foodName, dietStyle, allergies, dislikes) &&
+                            NutrientSourceQuality.isAcceptableSourceName(it.foodName)
+                    }
                 llmUsed = generated.isNotEmpty()
                 for (gen in generated) {
                     val gap = gaps.firstOrNull { it.id == gen.nutrientId } ?: continue
@@ -174,13 +182,14 @@ class RecommendationEngine(
         var cached = 0
         var llmFoods = 0
 
-        // Pass 1 — local resolved profiles rich in the nutrient.
-        val candidates = findCachedSources(nutrientId, dietStyle, allergies, dislikes)
-        for ((food, perAmount, per100) in candidates) {
+        // Pass 1 — local resolved profiles rich in the nutrient (quality
+        // gates inside: precise names, per-serving ranking, density floor).
+        val candidates = findCachedSources(nutrientId, dietStyle, allergies, dislikes, target)
+        for (cand in candidates) {
             if (issuedNames.size >= count) break
-            val key = food.displayName.lowercase()
+            val key = cand.food.displayName.lowercase()
             if (key in existing || key in issuedNames) continue
-            if (issue(gap, day, food.displayName, reason(gap, per100, perAmount, food), null)) {
+            if (issue(gap, day, cand.food.displayName, reason(gap, cand.per100, cand.perAmount, cand.food), null)) {
                 issuedNames += key
                 cached++
             }
@@ -198,8 +207,12 @@ class RecommendationEngine(
                 }
                     .onFailure { Log.w(TAG, "LLM single-nutrient batch failed: ${it.message}") }
                     .getOrDefault(emptyList())
-                    // Defensive gate: drop diet-violating LLM output (same as batch path).
-                    .filter { DietRules.allowsFood(it.foodName, dietStyle, allergies, dislikes) }
+                    // Defensive gates: diet violations + vague names (same as
+                    // the batch path, quality engine 2026-09-23).
+                    .filter {
+                        DietRules.allowsFood(it.foodName, dietStyle, allergies, dislikes) &&
+                            NutrientSourceQuality.isAcceptableSourceName(it.foodName)
+                    }
                 llmUsed = generated.isNotEmpty()
                 for (gen in generated) {
                     if (issuedNames.size >= count) break
@@ -272,31 +285,57 @@ class RecommendationEngine(
         )
     }
 
+    /** One quality-gated cached candidate: per-100 g value + serving grams. */
+    data class CachedSource(
+        val food: FoodEntity,
+        /** Profile's native amount (grams) the value refers to. */
+        val perAmount: Double,
+        /** Nutrient value normalized to per-100 g. */
+        val per100: Double,
+        /** Coverage = share of the daily target in one typical serving. */
+        val servingCoverage: Double
+    )
+
     /**
      * Local profile search: foods whose resolved panel has a high value of
-     * [nutrientId] per 100 g. Diet/allergy/dislike filtering by keyword.
+     * [nutrientId], ranked by how much of the daily [target] ONE TYPICAL
+     * SERVING delivers (feedback 2026-09-23 — per-100 g ranking favored
+     * papers like "herbs and seasonings" that nobody eats in 100 g lots).
+     * Quality gates via [NutrientSourceQuality]:
+     *  - precise-name check (rejects "Herbs and seasonings", junk LLM rows),
+     *  - density floor (one serving must cover ≥ 10% of the target),
+     *  - diet/allergy/dislike keyword filtering (unchanged).
      */
     private suspend fun findCachedSources(
         nutrientId: String,
         dietStyle: String,
         allergies: List<String>,
-        dislikes: List<String>
-    ): List<Triple<FoodEntity, Double, Double>> {
-        val out = ArrayList<Triple<FoodEntity, Double, Double>>()
+        dislikes: List<String>,
+        target: Double
+    ): List<CachedSource> {
+        val out = ArrayList<CachedSource>()
         val foods = nutrients.foodsAll()
         for (food in foods) {
             if (food.isSupplement) continue
+            if (!NutrientSourceQuality.isAcceptableSourceName(food.displayName)) continue
             if (!dietAllows(food.displayName, food.category, dietStyle, allergies, dislikes)) continue
             val profile = nutrients.profileForFood(food.id) ?: continue
             if (profile.confidence < 0.5) continue
             val values = runCatching { JSONObject(profile.valuesJson) }.getOrNull() ?: continue
             val value = values.optDouble(nutrientId, Double.NaN)
             if (value.isNaN() || value <= 0) continue
-            // Normalize to per-100-unit for ranking.
+            // Normalize to per-100-unit, then to per-typical-serving coverage.
             val per100 = if (profile.perAmount > 0) value * (100.0 / profile.perAmount) else value
-            out += Triple(food, profile.perAmount, per100)
+            val coverage = NutrientSourceQuality.servingCoverage(
+                per100 = per100,
+                servingGrams = food.typicalServingGrams,
+                target = target
+            )
+            if (!NutrientSourceQuality.meetsDensityFloor(coverage)) continue
+            out += CachedSource(food, profile.perAmount, per100, coverage)
         }
-        return out.sortedByDescending { it.third }.take(12)
+        // Rank by per-serving coverage of the daily target, best first.
+        return out.sortedByDescending { it.servingCoverage }.take(12)
     }
 
     /**

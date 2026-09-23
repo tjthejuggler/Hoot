@@ -7,13 +7,18 @@ import com.example.hoot.appGraph
 import com.example.hoot.data.local.entity.RecommendationEntity
 import com.example.hoot.data.local.entity.ScoreSnapshotEntity
 import com.example.hoot.domain.insights.CoachNote
+import com.example.hoot.domain.insights.Grade
 import com.example.hoot.domain.insights.Insight
 import com.example.hoot.domain.insights.InsightsEngine
+import com.example.hoot.domain.insights.NutrientGradeRow
+import com.example.hoot.domain.insights.NutrientGrades
 import com.example.hoot.domain.insights.NutrientInsightDef
 import com.example.hoot.domain.insights.WindowData
 import com.example.hoot.ui.common.LIMIT_TRACKER_IDS
 import com.example.hoot.ui.common.dayKeyMinusDays
+import com.example.hoot.ui.common.effectiveTarget
 import com.example.hoot.ui.common.todayKey
+import com.example.hoot.ui.common.windowDays
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -43,6 +48,17 @@ data class InsightsUiState(
     val tierById: Map<String, Int> = emptyMap(),
     /** Active tier filter; null = all tiers. */
     val tierFilter: Int? = null,
+    /**
+     * School-style report card (feedback 2026-09-23): EVERY nutrient from the
+     * complete definition list gets a letter grade over the active window,
+     * worst-first ([NutrientGrades.ROW_ORDER]). Replaces the ambiguous
+     * high/watch/info severity chips as the ranking signal.
+     */
+    val gradeRows: List<NutrientGradeRow> = emptyList(),
+    /** Visible (non-A) report rows — shown before "Show more" is tapped. */
+    val gradeRowsVisible: List<NutrientGradeRow> = emptyList(),
+    /** The A-graded rows, hidden behind "Show more" at the top of the list. */
+    val gradeRowsHiddenA: List<NutrientGradeRow> = emptyList(),
     val recommendations: List<RecommendationEntity> = emptyList(),
     val adherencePct: Int? = null,
     val coachNote: CoachNote.Result? = null,
@@ -160,6 +176,41 @@ class InsightsViewModel(app: Application) : AndroidViewModel(app) {
             }
         val tierById = defs.associate { it.id to (goals[it.id]?.priority ?: it.tier) }
 
+        // ---- Report card: letter grade for EVERY nutrient (2026-09-23) ----
+        // Direction-agnostic: too-low AND too-high both degrade the grade.
+        // Days with no ledger entry count as untracked (they cannot earn an
+        // A) — this also closes the iodine inconsistency where Home's
+        // FocusNow treated "never logged" as 0 while InsightsEngine skipped
+        // the nutrient entirely.
+        val windowDayCount = windowDays(from, today).toInt()
+        val perNutrientDays = perDay.groupBy { it.nutrientId }
+        val gradeRows = defs.mapNotNull { def ->
+            val isLimit = def.id in LIMIT_TRACKER_IDS
+            val target = effectiveTarget(def, goals[def.id]?.targetValue)
+            val series = perNutrientDays[def.id].orEmpty()
+                .filter { (it.day ?: "") >= from }
+                .sortedBy { it.day }
+            val coverages = if (target > 0) series.map { total ->
+                if (isLimit) {
+                    val over = total.total - target
+                    if (over <= 0) 1.0
+                    else (1.0 - over / (target * 0.5)).coerceIn(0.0, 1.0)
+                } else total.total / target
+            } else emptyList()
+            NutrientGrades.grade(
+                nutrientId = def.id,
+                name = def.name,
+                tier = goals[def.id]?.priority ?: def.tier,
+                unit = def.unit,
+                isExcess = isLimit,
+                coverages = coverages,
+                windowDays = windowDayCount,
+                isScoreable = target > 0
+            ).takeIf { target > 0 || series.isNotEmpty() }
+        }.sortedWith(NutrientGrades.ROW_ORDER)
+        val gradeRowsVisible = gradeRows.filter { it.grade != Grade.A }
+        val gradeRowsHiddenA = gradeRows.filter { it.grade == Grade.A }
+
         // Rule-based insights over the window.
         val intakeByDay = perDay.associate { (it.nutrientId to (it.day ?: "")) to it.total }
         val rawInsights = runCatching {
@@ -208,6 +259,20 @@ class InsightsViewModel(app: Application) : AndroidViewModel(app) {
         val safeRecs = recs.filter {
             dietFilter.allows(it.foodName) && dietFilter.allows(it.reasonText)
         }
+        // Carousel order (feedback 2026-09-23): rows must follow the LAST
+        // MONTH's lacking-nutrient ranking (trailing 30d), not today's gaps.
+        // Rank target nutrients by trailing-30d average coverage ascending
+        // (tier ascending tiebreak), then order rows by that nutrient rank —
+        // newest first within the same nutrient group.
+        val monthFrom = dayKeyMinusDays(today, 29L)
+        val monthTotals = runCatching {
+            graph.nutrients.dailyTotalsForWindow(monthFrom, today)
+        }.getOrDefault(emptyList())
+        val monthGapRank = monthGapRanking(defs, goals, monthTotals, monthFrom)
+        val orderedRecs = safeRecs.sortedWith(
+            compareBy<RecommendationEntity> { monthGapRank[it.nutrientId] ?: Int.MAX_VALUE }
+                .thenByDescending { it.day }
+        )
         return InsightsUiState(
             window = win,
             scoreSeries = current.sortedBy { it.day },
@@ -217,13 +282,44 @@ class InsightsViewModel(app: Application) : AndroidViewModel(app) {
             insights = filtered,
             tierById = tierById,
             tierFilter = tierFilter,
-            recommendations = safeRecs,
+            gradeRows = gradeRows,
+            gradeRowsVisible = gradeRowsVisible,
+            gradeRowsHiddenA = gradeRowsHiddenA,
+            recommendations = orderedRecs,
             adherencePct = adherence,
             coachNote = _coach.value,
             coachLoading = _coachLoading.value,
             loading = false,
             dietFilter = dietFilter
         )
+    }
+
+    /**
+     * nutrientId → rank (0 = worst) of the TRAILING-MONTH gaps, used to order
+     * the "Foods high in your lacking nutrients" carousel by last month's
+     * lacking nutrients. Same gap rule as [RecommendationEngine]:
+     * target-trackers only, trailing average below 80% of target.
+     */
+    private fun monthGapRanking(
+        defs: List<com.example.hoot.data.local.entity.NutrientDefinitionEntity>,
+        goals: Map<String, com.example.hoot.data.local.entity.NutrientGoalEntity>,
+        monthTotals: List<com.example.hoot.data.local.dao.NutrientDayTotal>,
+        monthFrom: String
+    ): Map<String, Int> {
+        val byNutrient = monthTotals.filter { (it.day ?: "") >= monthFrom }
+            .groupBy { it.nutrientId }
+        return defs.mapNotNull { def ->
+            if (def.id in LIMIT_TRACKER_IDS) return@mapNotNull null
+            val target = effectiveTarget(def, goals[def.id]?.targetValue)
+            if (target <= 0) return@mapNotNull null
+            val series = byNutrient[def.id].orEmpty()
+            val coverage = if (series.isEmpty()) 0.0 else series.map { it.total }.average() / target
+            if (coverage >= 0.8) return@mapNotNull null
+            def.id to ((goals[def.id]?.priority ?: def.tier) * 100_000 +
+                (coverage * 100_000).toInt())
+        }.sortedBy { it.second }
+            .mapIndexed { i, pair -> pair.first to i }
+            .toMap()
     }
 
     fun setWindow(win: InsightsWindow) {

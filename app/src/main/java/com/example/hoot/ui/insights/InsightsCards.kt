@@ -1,6 +1,7 @@
 package com.example.hoot.ui.insights
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -29,83 +30,88 @@ import coil3.request.ImageRequest
 import coil3.request.crossfade
 import coil3.request.error
 import com.example.hoot.data.local.entity.RecommendationEntity
-import com.example.hoot.domain.insights.Insight
-import com.example.hoot.domain.insights.InsightSeverity
+import com.example.hoot.domain.insights.Grade
+import com.example.hoot.domain.insights.NutrientGradeRow
 import com.example.hoot.ui.common.TierChip
 import com.example.hoot.ui.common.foodEmoji
+import com.example.hoot.ui.theme.ScoreHigh
+import com.example.hoot.ui.theme.ScoreLow
+import com.example.hoot.ui.theme.ScoreMid
 
 /** Card composables of the Insights screen (extracted from InsightsScreen). */
 
+/** Letter → color (school-report semantics; theme accents, dark-safe). */
 @Composable
-internal fun InsightCard(insight: Insight, tier: Int?, dietFilter: com.example.hoot.domain.insights.DietTextFilter) {
-    // Render-boundary diet gate (diet-fix hardening, 2026-09): the message —
-    // including the "Good sources: …" tail — is re-filtered on the way OUT
-    // so stale/persisted omnivore-era text can never reach the user.
-    val safeMessage = com.example.hoot.domain.insights.DietAwareSources
-        .sanitizeForDisplay(insight.message, dietFilter.toProfile())
-    val severityColor = when (insight.severity) {
-        InsightSeverity.CRITICAL -> MaterialTheme.colorScheme.error
-        InsightSeverity.WARNING -> Color(0xFFF2C94C)
-        InsightSeverity.INFO -> MaterialTheme.colorScheme.primary
+internal fun gradeColor(grade: Grade): Color = when (grade) {
+    Grade.F -> MaterialTheme.colorScheme.error
+    Grade.D -> ScoreLow
+    Grade.C -> ScoreMid
+    Grade.B -> ScoreHigh.copy(alpha = 0.75f)
+    Grade.A -> ScoreHigh
+}
+
+/**
+ * One report-card row (feedback 2026-09-23): letter badge (F..A) replaces the
+ * ambiguous high/watch/info chip. Badge text = situation summary, e.g.
+ * "F · too low", "D · too high", "B · on track-ish", "A · solid".
+ */
+@Composable
+internal fun GradeRow(row: NutrientGradeRow, onClick: (() -> Unit)?) {
+    val color = gradeColor(row.grade)
+    val situation = when {
+        !row.isScoreable -> "not tracked"
+        row.isExcess && row.grade != Grade.A -> "too high"
+        row.grade == Grade.A -> "doing great"
+        else -> "too low"
     }
-    val severityLabel = when (insight.severity) {
-        InsightSeverity.CRITICAL -> "high"
-        InsightSeverity.WARNING -> "watch"
-        InsightSeverity.INFO -> "info"
-    }
-    // State-appropriate effects line (feedback: show common symptoms/effects
-    // of deficiencies and excesses) — seed-curated, diet-sanitized too.
-    val safeEffects = insight.effects?.let {
-        com.example.hoot.domain.insights.DietAwareSources
-            .sanitizeForDisplay(it, dietFilter.toProfile())
-    }
+    val desc = "${row.name}: grade ${row.grade.name}, $situation"
     Row(
-        Modifier
+        (onClick?.let { Modifier.clickable(onClick = it) } ?: Modifier)
             .fillMaxWidth()
             .padding(vertical = 6.dp)
+            .semantics { contentDescription = desc },
+        verticalAlignment = Alignment.CenterVertically
     ) {
+        Box(
+            Modifier
+                .background(color.copy(alpha = 0.16f), RoundedCornerShape(8.dp))
+                .padding(horizontal = 8.dp, vertical = 2.dp)
+        ) {
+            Text(
+                row.grade.name,
+                style = MaterialTheme.typography.titleSmall,
+                color = color
+            )
+        }
+        Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                if (tier != null) {
-                    TierChip(tier)
-                    Spacer(Modifier.width(8.dp))
-                }
                 Text(
-                    insight.title,
-                    style = if (tier == 1) MaterialTheme.typography.titleSmall
-                    else MaterialTheme.typography.labelLarge,
+                    row.name,
+                    style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.weight(1f, fill = false)
                 )
                 Spacer(Modifier.width(8.dp))
-                Box(
-                    Modifier
-                        .background(severityColor.copy(alpha = 0.15f), RoundedCornerShape(6.dp))
-                        .padding(horizontal = 6.dp, vertical = 1.dp)
-                ) {
-                    Text(
-                        severityLabel,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = severityColor
-                    )
-                }
+                TierChip(row.tier)
+            }
+            val detail = when {
+                !row.isScoreable -> "No target set — shown for reference only"
+                row.grade == Grade.F && row.daysWithData == 0 ->
+                    "No data logged in this window — log meals to find out"
+                row.isExcess -> "Averaging ${(row.avgCoverage * 100).toInt()}% of your cap (${
+                    row.badDays} over-cap days)"
+                else -> "Averaging ${(row.avgCoverage * 100).toInt()}% of target (${
+                    row.badDays} low days)"
             }
             Text(
-                safeMessage,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 3, overflow = TextOverflow.Ellipsis
+                detail,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            safeEffects?.takeIf { it.isNotBlank() }?.let { effects ->
-                Text(
-                    "You may notice: $effects",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = severityColor,
-                    maxLines = 2, overflow = TextOverflow.Ellipsis
-                )
-            }
         }
     }
 }
+
 
 @Composable
 internal fun RecommendationCard(rec: RecommendationEntity) {

@@ -117,9 +117,9 @@ network feature degrades gracefully without them.
 ./gradlew :app:testDebugUnitTest
 ```
 
-55 tests cover the pure-JVM domain layers: `IngredientParser`, `Units`,
+60+ tests cover the pure-JVM domain layers: `IngredientParser`, `Units`,
 `FoodNormalizer`, `SupplementLabelParser`, `LlmJson` (strict-JSON
-extraction) and `ScoreEngine`.
+extraction), `ScoreEngine` and `NutrientGrades` (F–A report-card grading).
 
 ### Requesting Tail changes
 
@@ -134,6 +134,58 @@ for no breaking changes to the existing v1 surface.
 ---
 
 ## Changelog
+
+### 2026-09-23 (2) — Nutrient detail sheet: window coverages + food-suggestion quality
+
+- `domain/insights/NutrientSourceQuality.kt` — NEW shared quality engine for
+  food suggestions, applied at BOTH generation and render boundaries:
+  1. **Name precision** — vague category rows ("Herbs and seasonings",
+     "Spices", "Vegetables") are rejected via a category blacklist on top of
+     the existing `SmartFoodMatcher.isPlausibleFoodName` gate. A name is
+     vague only when EVERY meaningful token is a category word — "Chia
+     seeds" still passes, "Herbs and seasonings" never will.
+  2. **Density floor** — one realistic serving must cover ≥ 10% of the
+     daily target; weak rows (1% DV herbs) can no longer pad the list.
+  3. **Per-serving ranking** — candidates rank by % of target delivered by
+     the food's typical serving (per-100 g × serving/100), fixing the
+     inversion where 100 g-only "paper" foods outranked real portions.
+- `RecommendationEngine` — `findCachedSources` now takes the target, applies
+  all three gates, and returns `CachedSource(food, perAmount, per100,
+  servingCoverage)`; both the batch and single-nutrient LLM paths also gate
+  generated food names through the same precision check.
+- `ui/common/NutrientDetailViewModel.kt` + `NutrientDetailSheet.kt` — the
+  sheet now shows TODAY + THIS WEEK + THIS MONTH % of target (7d/30d
+  averages over logged days, "no data" when never logged), and persisted
+  suggestions are re-gated (vague names dropped) and ordered by stored %
+  coverage, best first.
+- `NutrientSourceQualityTest` — 9 unit tests: vague-name rejection matrix,
+  per-serving scaling math, density floor, herbs-vs-chia inversion case,
+  reason-template parsing.
+
+### 2026-09-23 — Insights: letter-grade report card + consistent gaps
+
+- `domain/insights/NutrientGrades.kt` — NEW pure-JVM engine: every nutrient
+  from the complete definition list gets an F–A school grade over the active
+  window, direction-agnostic (too low AND too high both degrade the grade).
+  Never-logged nutrients grade F (unknown must not look good); untracked days
+  pull the grade down. Unit-tested in `NutrientGradesTest` (11 cases: A/B/D/F
+  boundaries, excess symmetry, untracked penalties, row ordering).
+- `ui/insights/InsightsScreen.kt` — "What stands out" replaced by the
+  "Nutrient report card": F rows first, then D/C/B, with the A rows collapsed
+  behind a "Show more — N you're acing (A)" toggle (tier filter chips kept).
+  The ambiguous high/watch/info severity chips no longer drive the ranking.
+- `ui/insights/InsightsCards.kt` — `GradeRow` + `gradeColor` composables;
+  the old `InsightCard` (severity chip) removed.
+- `ui/insights/InsightsViewModel.kt` — computes `gradeRows` /
+  `gradeRowsVisible` / `gradeRowsHiddenA` over the window; the
+  "Foods high in your lacking nutrients" carousel is now ordered by the
+  TRAILING MONTH's (30d) lacking-nutrient ranking instead of issue order —
+  worst monthly gap's foods first (`monthGapRanking`, same 80% gap rule as
+  `RecommendationEngine`).
+- Iodine consistency fix: Home's FocusNow treated "never logged" as 0 intake
+  (so sparse nutrients like iodine showed gaps + smart picks) while
+  InsightsEngine skipped them entirely — the report card grades ALL
+  definitions with untracked-day penalties, closing the discrepancy.
 
 ### 2026-09-21 — Seed LUT: bundled USDA panels replace most ingredient LLM calls
 

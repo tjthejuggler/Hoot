@@ -6,10 +6,27 @@ import androidx.lifecycle.viewModelScope
 import com.example.hoot.appGraph
 import com.example.hoot.data.local.entity.NutrientDefinitionEntity
 import com.example.hoot.data.local.entity.RecommendationEntity
+import com.example.hoot.domain.insights.NutrientSourceQuality
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+
+/** One window-coverage row (today / this week / this month). */
+data class CoverageWindow(
+    val label: String,
+    val intake: Double,
+    val target: Double,
+    val daysTracked: Int,
+    val windowDays: Int
+) {
+    /** 0–100 % of target across days WITH data. */
+    val pct: Int
+        get() = if (target <= 0) 0 else (intake / target * 100.0).toInt()
+
+    /** "no data" marker when the nutrient was never logged in the window. */
+    val hasData: Boolean get() = daysTracked > 0
+}
 
 /** State of the actionable nutrient detail sheet (overhaul feedback #3). */
 data class NutrientDetailState(
@@ -21,6 +38,8 @@ data class NutrientDetailState(
     ),
     val intake: Double = 0.0,
     val target: Double = 0.0,
+    /** Today / 7-day / 30-day coverage rows (feedback 2026-09-23). */
+    val windows: List<CoverageWindow> = emptyList(),
     /** Cached + LLM suggestions for this nutrient today (open + answered). */
     val suggestions: List<RecommendationEntity> = emptyList(),
     val loadingMore: Boolean = false,
@@ -57,11 +76,26 @@ class NutrientDetailViewModel(app: Application) : AndroidViewModel(app) {
             val target = effectiveTarget(def, goals[nutrientId]?.targetValue)
             val intake = graph.nutrients.dailyTotals(day)
                 .firstOrNull { it.nutrientId == nutrientId }?.total ?: 0.0
+            // Window coverages (feedback 2026-09-23): today + trailing 7d +
+            // trailing 30d, % of target over days WITH data.
+            val windows = listOf(7L to "This week", 30L to "This month").map { (days, label) ->
+                val from = dayKeyMinusDays(day, days - 1)
+                val totals = graph.nutrients.dailyTotalsForWindow(from, day)
+                    .filter { it.nutrientId == nutrientId && (it.day ?: "") >= from }
+                CoverageWindow(
+                    label = label,
+                    intake = totals.map { it.total }.takeIf { it.isNotEmpty() }?.average() ?: 0.0,
+                    target = target,
+                    daysTracked = totals.size,
+                    windowDays = days.toInt()
+                )
+            }
             _state.value = NutrientDetailState(
                 nutrientId = nutrientId,
                 def = def,
                 intake = intake,
                 target = target,
+                windows = windows,
                 suggestions = emptyList(),
                 loadingMore = true,
                 llmUnavailable = !graph.settings.current().llmConfigured
@@ -115,12 +149,23 @@ class NutrientDetailViewModel(app: Application) : AndroidViewModel(app) {
             roomAllergies = jsonList(roomDiet?.allergiesJson),
             roomDislikes = jsonList(roomDiet?.dislikesJson)
         )
+        // Render-boundary quality gate + coverage ordering (2026-09-23): rows
+        // issued by an older run with vague names ("herbs and seasonings")
+        // never surface, and the list is ordered by the % of target each
+        // food covers (parsed from the standard reason template), best first.
         val recs = graph.nutrients.recommendationsBetween(day, day)
             .filter { it.nutrientId == _state.value.nutrientId }
             .filter {
-                dietFilter.allows(it.foodName) && dietFilter.allows(it.reasonText)
+                dietFilter.allows(it.foodName) && dietFilter.allows(it.reasonText) &&
+                    NutrientSourceQuality.isAcceptableSourceName(it.foodName)
             }
-            .sortedWith(compareByDescending<RecommendationEntity> { it.accepted == null }.thenBy { it.foodName })
+            .sortedWith(
+                compareByDescending<RecommendationEntity> { it.accepted == null }
+                    .thenByDescending {
+                        NutrientSourceQuality.parseCoveragePct(it.reasonText) ?: 0.0
+                    }
+                    .thenBy { it.foodName }
+            )
         _state.value = _state.value.copy(
             suggestions = recs,
             loadingMore = false,
