@@ -179,6 +179,10 @@ class NutrientRepository(
     suspend fun purgeDietViolatingRecommendations(profile: DietProfile): Int =
         recommendations.purgeDietViolating(profile)
 
+    /** Ledger hygiene: delete rows failing the current quality gates. */
+    suspend fun purgeLowQualityRecommendations(): Int =
+        recommendations.purgeLowQuality()
+
     suspend fun recommendationCountsBetween(
         from: String,
         to: String

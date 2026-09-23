@@ -49,6 +49,29 @@ class RecommendationRepository(
         return violating.size
     }
 
+    /**
+     * Ledger hygiene (feedback 2026-09-23 round 2, systemic): deletes every
+     * persisted row whose food name fails the CURRENT quality gates — vessel
+     * nouns ("Vegan Platter"), diet-adjective stubs ("Plant-based meal"),
+     * meal-occasion titles ("Vegan Brunch Spread") and segmentation
+     * artifacts ("Plus Seaweed Sheets"). Older builds persisted such rows
+     * before the gates existed; purging them once at startup keeps the
+     * carousel clean without relying on every render path to re-filter.
+     * Engine re-issues replacements on the next recommendation pass.
+     */
+    suspend fun purgeLowQuality(): Int {
+        val bad = recommendationDao.all().filter {
+            val cleaned = com.example.hoot.domain.insights.SmartFoodMatcher
+                .cleanFoodName(it.foodName)
+            !com.example.hoot.domain.insights.SmartFoodMatcher.isPlausibleFoodName(cleaned) ||
+                !com.example.hoot.domain.insights.NutrientSourceQuality
+                    .isAcceptableSourceName(it.foodName)
+        }.map { it.id }
+        if (bad.isEmpty()) return 0
+        recommendationDao.deleteByIds(bad)
+        return bad.size
+    }
+
     suspend fun countsBetween(
         from: String,
         to: String

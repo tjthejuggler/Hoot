@@ -226,7 +226,13 @@ class AppGraph(context: Context) {
 
     /**
      * Cross-engine reactions (sync→ingest, drain→refresh, startup self-heals,
-     * diet guard) — started here so this class stays a pure object table.
+     * diet guard) — constructed here and STARTED below (pipeline-start fix,
+     * 2026-09-23): the refactoring that extracted [NutritionPipeline] dropped
+     * its [NutritionPipeline.start] call, so the startup resolution drain,
+     * the sync→kick reaction and every self-heal were dead code. Unresolved
+     * ingredient/supplement rows then sat in the DB forever and the Today
+     * chip read "N foods need analysis — tap to retry" on EVERY fresh launch
+     * even though resolution state was supposed to persist.
      */
     private val nutritionPipeline = NutritionPipeline(
         scope = appScope,
@@ -239,6 +245,12 @@ class AppGraph(context: Context) {
         nutrients = nutrients,
         recommendationEngine = recommendationEngine
     )
+
+    init {
+        // Property initializers (including `nutritionPipeline`) have run by
+        // the time this executes — safe to wire the collectors.
+        nutritionPipeline.start()
+    }
 
     /**
      * Issues/refreshes today's recommendations (delegates to the pipeline).

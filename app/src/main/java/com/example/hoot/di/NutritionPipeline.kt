@@ -112,6 +112,12 @@ internal class NutritionPipeline(
                 )
             }.distinctUntilChanged().collect { filter ->
                 runCatching {
+                    // Ledger hygiene (feedback 2026-09-23 round 2): rows
+                    // persisted by older builds that fail the CURRENT quality
+                    // gates ("Vegan Brunch Spread", "Plus Seaweed Sheets")
+                    // are deleted once at startup / diet change; the engine
+                    // re-issues specific replacements right after.
+                    nutrients.purgeLowQualityRecommendations()
                     nutrients.purgeDietViolatingRecommendations(filter.toProfile())
                     recommendForToday()
                 }.onFailure { android.util.Log.e(TAG, "diet guard refresh failed", it) }

@@ -261,7 +261,39 @@ object SmartFoodMatcher {
     /** Vessel/umbrella nouns that name no concrete food. */
     private val GENERIC_HEAD_NOUNS: Set<String> = setOf(
         "beverage", "drink", "meal", "dish", "snack", "food", "item",
-        "portion", "serving", "plate", "bowl", "leftovers", "combo", "entree"
+        "portion", "serving", "plate", "platter", "bowl", "leftovers",
+        "combo", "entree",
+        // Segmentation-artifact heads (feedback 2026-09-23 round 2):
+        // "Plus Seaweed Sheets" is a meal fragment, not a food; same for
+        // packaging/vessel shapes. ("bar" stays out — granola bar is food.)
+        "sheet", "spread", "pack", "bag", "box", "bottle", "can", "jar",
+        "carton", "wrapper", "leftover"
+    )
+
+    /**
+     * DISH nouns — composed foods a shopper cannot act on precisely
+     * (round 3, feedback 2026-09-23: bare "Sandwich" / "Chicken Sandwich").
+     * A recommendation must name an ingredient; these name an assembly.
+     * ANY word in the name being one of these rejects it ("Tofu Burger"),
+     * because a dish word makes the whole phrase a composed food. Real
+     * ingredients ("bread", "tofu", "turkey breast") are unaffected.
+     */
+    private val DISH_NOUNS: Set<String> = setOf(
+        "sandwich", "burger", "wrap", "taco", "burrito", "quesadilla",
+        "panini", "hoagie", "sub", "soup", "stew", "curry", "casserole",
+        "lasagna", "pizza", "quiche", "omelette", "omelet", "frittata",
+        "smoothie", "shake", "parfait", "salad", "sushi", "kebab",
+        "potpie", "nugget", "patty"
+    )
+
+    /**
+     * Meal-occasion words — ANY word in the name being one of these marks a
+     * dish/meal title ("Vegan Brunch Spread", "Sunday Dinner leftovers"),
+     * never a single purchasable food. Real food names don't carry them.
+     */
+    private val MEAL_OCCASION_WORDS: Set<String> = setOf(
+        "breakfast", "brunch", "lunch", "dinner", "supper", "feast",
+        "buffet", "picnic", "barbecue", "barbeque", "bbq", "dessert"
     )
 
     /** Segmentation/compound-title words — a real SINGLE food name has none. */
@@ -272,8 +304,9 @@ object SmartFoodMatcher {
 
     /**
      * True when [raw] looks like a single concrete food a nutrition app can
-     * responsibly recommend: ≤ 4 words, no compound-title connectors, and a
-     * non-generic head noun ("Dark Beverage" fails, "Dark chocolate" passes).
+     * responsibly recommend: ≤ 4 words, no compound-title connectors, no
+     * meal-occasion word, and a non-generic head noun ("Dark Beverage" and
+     * "Vegan Brunch Spread" fail; "Dark chocolate" passes).
      */
     fun isPlausibleFoodName(raw: String): Boolean {
         val words = cleanFoodName(raw).split(Regex("[^A-Za-z0-9]+"))
@@ -281,7 +314,39 @@ object SmartFoodMatcher {
         if (words.isEmpty() || words.size > 4) return false
         val lower = words.map { it.lowercase() }
         if (lower.any { it in TITLE_CONNECTORS }) return false
+        if (lower.any { it in MEAL_OCCASION_WORDS }) return false
+        // Dish check (round 3): ANY dish noun — singularized so "Sandwiches"
+        // and "Burrito Bowl"-style qualifiers die too — makes the phrase a
+        // composed food, whatever position it sits in.
+        if (lower.any { matchesDishNoun(it) }) return false
         return singularize(lower.last()) !in GENERIC_HEAD_NOUNS
+    }
+
+    /**
+     * Dish-noun match tolerant of the pluralizer's blind spot: "sandwiches"
+     * → "sandwiche" (single-s drop), so the check also tries the
+     * trailing-"e"-stripped form before giving up.
+     */
+    private fun matchesDishNoun(word: String): Boolean {
+        val singular = singularize(word)
+        if (singular in DISH_NOUNS) return true
+        return singular.endsWith("e") && singular.dropLast(1) in DISH_NOUNS
+    }
+
+    /**
+     * Canonical identity of a suggestion — the ONE dedupe key every surface
+     * shares (repetition fix round 2, 2026-09-23: "Seaweed", "Plus Seaweed
+     * Sheets" and "Nori" rendered as three separate carousel cards because
+     * raw-string equality saw three different names). Combines artifact
+     * cleaning, variant-family collapse ("seaweed|nori|kelp|wakame" → one
+     * family key) and qualifier-stripped name signatures ("Fortified Almond
+     * Milk" ≡ "Almond Milk"). Null when nothing meaningful remains; callers
+     * treat nulls as unique.
+     */
+    fun suggestionIdentity(displayName: String): String? {
+        val cleaned = cleanFoodName(displayName)
+        variantKey(cleaned)?.let { return "family:$it" }
+        return nameSignature(cleaned)
     }
 
     /** "Nori" / "Seaweed Sheets" / "Wakame" → the same group key; null = unique. */

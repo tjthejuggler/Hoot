@@ -135,6 +135,60 @@ for no breaking changes to the existing v1 surface.
 
 ## Changelog
 
+### 2026-09-23 (5) — Dish-noun gate (bare "Sandwich" class)
+
+- `SmartFoodMatcher` gains `DISH_NOUNS`: composed-food nouns ("sandwich",
+  "burger", "wrap", "taco", "burrito", "soup", "curry", "pizza",
+  "smoothie", "sushi", "salad", …) reject a name when ANY word matches —
+  singularized, with a trailing-"e" variant for the pluralizer's blind spot
+  ("Sandwiches" → "sandwiche" → "sandwich"). Bare "Sandwich" and qualified
+  dishes ("Chicken Sandwich", "Tofu Burger") can no longer be suggested,
+  persisted, or rendered; plain ingredients are unaffected.
+
+### 2026-09-23 (4) — Suggestion identity + artifact purge (systemic)
+
+- **Canonical suggestion identity** — `SmartFoodMatcher.suggestionIdentity`:
+  artifact cleaning + variant-family collapse ("Seaweed"/"Nori"/"Wakame" →
+  one family) + qualifier-stripped signatures. Every dedupe surface (daily
+  generation, "More suggestions", Insights carousel) now keys on it, so
+  "Seaweed", "Plus Seaweed Sheets" and "Nori" can only ever produce ONE card.
+- **Gate hardening round 2** — `isPlausibleFoodName` now rejects packaging/
+  segmentation heads ("sheet", "spread", "pack", …) and ANY meal-occasion
+  word ("brunch", "dinner", "dessert", …), killing "Plus Seaweed Sheets" and
+  "Vegan Brunch Spread" class rows systemically.
+- **Ledger purge at startup** — `RecommendationRepository.purgeLowQuality`
+  deletes persisted rows that fail the CURRENT gates; wired into the
+  pipeline's startup/diet-change collector so old-build junk disappears from
+  the ledger itself (not just from rendering) and the engine re-issues
+  specific replacements immediately.
+- Issued rows now persist artifact-free display names (`cleanFoodName`).
+
+### 2026-09-23 (3) — Specific food recommendations + startup-analysis fix
+
+- **Startup re-analysis chip fixed** — `AppGraph` now actually calls
+  `NutritionPipeline.start()`. The refactor that extracted the pipeline
+  dropped the start call, so the startup resolution drain, the
+  sync→kick reaction, and every self-heal were dead code: unresolved rows
+  sat at `resolveAttempts < 3` forever and Today showed
+  "N foods need analysis — tap to retry" on every fresh launch. With the
+  collectors live, resolution state persists and restarts enqueue ZERO items
+  when everything is already analyzed.
+- **"Vegan platter" / "plant-based meal" class of suggestions eliminated**:
+  - `SmartFoodMatcher.GENERIC_HEAD_NOUNS` gains `platter` (vessel nouns
+    reject the name outright).
+  - `NutrientSourceQuality` gains a diet/claim-adjective gate: names whose
+    every meaningful token is a diet label or marketing adjective
+    ("Vegan meal", "Fortified plant based") are rejected, while
+    food-qualified wordings ("Fortified plant milk", "Whey protein") pass.
+  - `RecommendationEngine.SYSTEM_PROMPT` now demands ONE concrete,
+    purchasable whole food (1–3 words) and explicitly forbids meal names,
+    dishes, platters, categories and diet labels.
+- **Recommendation repetition fixed**: a trailing 14-day per-nutrient dedupe
+  (`recentlySuggestedByNutrient`) keeps both the daily cache/LLM passes and
+  the nutrient-detail "More suggestions" flow from re-issuing the same food;
+  the Insights carousel additionally filters persisted rows through the
+  quality gate and collapses repeated food names to their newest occurrence.
+
 ### 2026-09-23 (2) — Nutrient detail sheet: window coverages + food-suggestion quality
 
 - `domain/insights/NutrientSourceQuality.kt` — NEW shared quality engine for

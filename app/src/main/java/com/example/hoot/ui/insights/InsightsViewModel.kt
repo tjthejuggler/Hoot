@@ -255,10 +255,34 @@ class InsightsViewModel(app: Application) : AndroidViewModel(app) {
 
         // Carousel rows come from the PERSISTED recommendation_log — rows
         // issued before a diet change (or by a constraint-ignoring LLM) must
-        // not render (diet-fix hardening, 2026-09).
-        val safeRecs = recs.filter {
-            dietFilter.allows(it.foodName) && dietFilter.allows(it.reasonText)
-        }
+        // not render (diet-fix hardening, 2026-09). Quality gates (feedback
+        // 2026-09-23, rounds 1+2): legacy vague/constraint rows ("Vegan
+        // Platter") AND meal-segmentation artifacts ("Plus Seaweed Sheets",
+        // "Vegan Brunch Spread") never render, and suggestions collapse to
+        // the newest occurrence of their CANONICAL identity (variant family
+        // + qualifier-stripped signature) so "Seaweed", "Plus Seaweed
+        // Sheets" and "Nori" can only ever produce one card.
+        val safeRecs = recs
+            .filter {
+                dietFilter.allows(it.foodName) && dietFilter.allows(it.reasonText) &&
+                    com.example.hoot.domain.insights.SmartFoodMatcher
+                        .isPlausibleFoodName(
+                            com.example.hoot.domain.insights.SmartFoodMatcher
+                                .cleanFoodName(it.foodName)
+                        ) &&
+                    com.example.hoot.domain.insights.NutrientSourceQuality
+                        .isAcceptableSourceName(it.foodName)
+            }
+            .distinctBy {
+                com.example.hoot.domain.insights.SmartFoodMatcher
+                    .suggestionIdentity(it.foodName) ?: "raw:${it.id}"
+            }
+            .map {
+                it.copy(
+                    foodName = com.example.hoot.domain.insights.SmartFoodMatcher
+                        .cleanFoodName(it.foodName)
+                )
+            }
         // Carousel order (feedback 2026-09-23): rows must follow the LAST
         // MONTH's lacking-nutrient ranking (trailing 30d), not today's gaps.
         // Rank target nutrients by trailing-30d average coverage ascending

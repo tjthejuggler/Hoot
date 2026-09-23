@@ -35,7 +35,27 @@ object NutrientSourceQuality {
         "vegetables", "fruits", "greens", "salad", "salads",
         "grains", "cereal", "cereals", "nuts", "seeds", "beans", "legumes",
         "dairy", "seafood", "meat", "poultry", "supplements", "supplement",
-        "misc", "other", "assorted", "variety", "mixed"
+        "misc", "other", "assorted", "variety", "mixed",
+        // Diet-adjective stubs (feedback 2026-09-23): LLM output like
+        // "Vegan Platter" / "Plant-based meal" names a CONSTRAINT, not a
+        // food — these exact phrases are never actionable.
+        "vegan meal", "vegan platter", "vegan dish", "vegan foods",
+        "vegetarian meal", "plant based meal", "plant based foods",
+        "meat free", "animal free", "dairy free meal"
+    )
+
+    /**
+     * Diet/claim adjectives that carry NO food identity. A name whose every
+     * meaningful token is one of these ("Fortified vegan", "Healthy plant
+     * based") names a constraint or marketing claim, never something the
+     * user can buy or prepare. Food-qualified tokens ("tofu", "milk",
+     * "chia") still pass — only full-adjective stubs die here.
+     */
+    private val NON_FOOD_ADJECTIVES: Set<String> = setOf(
+        "vegan", "vegetarian", "pescatarian", "plant", "based", "plantbased",
+        "fortified", "healthy", "wholesome", "nutritious", "natural",
+        "free", "friendly", "style", "safe", "approved", "boosting",
+        "rich", "high", "packed", "loaded", "boosted"
     )
 
     /** Connector words that don't carry food identity ("herbs AND seasonings"). */
@@ -53,7 +73,11 @@ object NutrientSourceQuality {
         val words = raw.lowercase().split(Regex("[^a-z]+")).filter { it.isNotBlank() }
         if (words.isEmpty()) return false
         if (words.joinToString(" ") in VAGUE_NAMES) return false
-        val meaningful = words.filter { it !in CONNECTORS }
+        // Diet/claim adjectives carry no identity: require at least one
+        // meaningful token that is neither a connector nor an adjective
+        // ("Vegan" alone or "Fortified plant based" fail; "Fortified plant
+        // milk" passes — "milk" names the food).
+        val meaningful = words.filter { it !in CONNECTORS && it !in NON_FOOD_ADJECTIVES }
         if (meaningful.isEmpty()) return false
         return meaningful.any { it !in VAGUE_NAMES }
     }

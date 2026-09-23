@@ -53,7 +53,10 @@ class RecommendationEngine(
     /**
      * Analyzes [day]'s intake vs goals and issues recommendations for the
      * biggest gaps. Idempotent-ish: nutrients already targeted today are
-     * skipped, so repeated kicks don't pile up duplicates.
+     * skipped, so repeated kicks don't pile up duplicates. Foods issued for
+     * the SAME nutrient within the trailing dedup window are also skipped
+     * (repetition fix 2026-09-23) — the Insights carousel ordered by nutrient
+     * rank made identical cards resurface day after day otherwise.
      */
     suspend fun generateForDay(day: String): RunStats {
         val filter = mergedDietFilter()
@@ -65,6 +68,9 @@ class RecommendationEngine(
         val goals = nutrients.goalsAll().associateBy { it.nutrientId }
         val totals = nutrients.dailyTotals(day).associate { it.nutrientId to it.total }
         val alreadyToday = nutrients.recommendedNutrientIdsForDay(day).toSet()
+        // nutrientId → foods already suggested recently (same nutrient +
+        // same food within 14 days = the repetition the user sees).
+        val recentlySuggested = recentlySuggestedByNutrient(day)
 
         // Rank deficient nutrients: tier asc (critical first), coverage asc.
         val gaps = definitions.values.mapNotNull { def ->
@@ -98,11 +104,13 @@ class RecommendationEngine(
         // PER-SERVING % of target (not per-100g), and enforces the density
         // floor — vague/weak rows ("herbs and seasonings" at 1%) never issue.
         for (gap in gaps) {
+            val seen = recentlySuggested[gap.id].orEmpty()
             val candidates = findCachedSources(gap.id, dietStyle, allergies, dislikes, gap.target)
+                .filter { identityOf(it.food.displayName) !in seen }
             cachedFoods += candidates.size
             val take = min(candidates.size, foodsPerNutrient)
             for (cand in candidates.take(take)) {
-                if (issue(gap, day, cand.food.displayName, reason(gap, cand.per100, cand.perAmount, cand.food), null)) {
+                if (issue(gap, day, displayNameOf(cand.food.displayName), reason(gap, cand.per100, cand.perAmount, cand.food), null)) {
                     issued++
                 }
             }
@@ -128,7 +136,9 @@ class RecommendationEngine(
                 llmUsed = generated.isNotEmpty()
                 for (gen in generated) {
                     val gap = gaps.firstOrNull { it.id == gen.nutrientId } ?: continue
-                    if (issue(gap, day, gen.foodName, gen.reason, gen.imageUrl)) llmFoods++
+                    val seen = recentlySuggested[gap.id].orEmpty()
+                    if (identityOf(gen.foodName) in seen) continue
+                    if (issue(gap, day, displayNameOf(gen.foodName), gen.reason, gen.imageUrl)) llmFoods++
                 }
             } else {
                 Log.i(TAG, "LLM not configured — cache-only recommendations for $day")
@@ -173,10 +183,13 @@ class RecommendationEngine(
         val dietStyle = filter.dietStyle
         val allergies = filter.allergies
         val dislikes = filter.dislikes
+        // Same-day rows PLUS the trailing dedup window (repetition fix
+        // 2026-09-23): the sheet must not hand back what earlier days
+        // already suggested for this nutrient.
         val existing = nutrients.recommendationsBetween(day, day)
             .filter { it.nutrientId == nutrientId }
             .map { it.foodName.lowercase() }
-            .toSet()
+            .toSet() + (recentlySuggestedByNutrient(day)[nutrientId] ?: emptySet())
 
         val issuedNames = LinkedHashSet<String>()
         var cached = 0
@@ -187,9 +200,9 @@ class RecommendationEngine(
         val candidates = findCachedSources(nutrientId, dietStyle, allergies, dislikes, target)
         for (cand in candidates) {
             if (issuedNames.size >= count) break
-            val key = cand.food.displayName.lowercase()
+            val key = identityOf(cand.food.displayName)
             if (key in existing || key in issuedNames) continue
-            if (issue(gap, day, cand.food.displayName, reason(gap, cand.per100, cand.perAmount, cand.food), null)) {
+            if (issue(gap, day, displayNameOf(cand.food.displayName), reason(gap, cand.per100, cand.perAmount, cand.food), null)) {
                 issuedNames += key
                 cached++
             }
@@ -216,9 +229,9 @@ class RecommendationEngine(
                 llmUsed = generated.isNotEmpty()
                 for (gen in generated) {
                     if (issuedNames.size >= count) break
-                    val key = gen.foodName.lowercase()
+                    val key = identityOf(gen.foodName)
                     if (key in existing || key in issuedNames) continue
-                    if (issue(gap, day, gen.foodName, gen.reason, gen.imageUrl)) {
+                    if (issue(gap, day, displayNameOf(gen.foodName), gen.reason, gen.imageUrl)) {
                         issuedNames += key
                         llmFoods++
                     }
@@ -339,6 +352,38 @@ class RecommendationEngine(
     }
 
     /**
+     * Canonical identity helpers (repetition fix round 2, 2026-09-23):
+     * dedupe keys go through [SmartFoodMatcher.suggestionIdentity] —
+     * artifact cleaning + variant-family collapse + qualifier-stripped
+     * signatures — so "Seaweed", "Plus Seaweed Sheets" and "Nori" are ONE
+     * suggestion, and raw-string equality can never split them again. The
+     * identity falls back to the cleaned lowercase name for unparseable
+     * rows so they still dedupe against themselves.
+     */
+    private fun identityOf(name: String): String =
+        SmartFoodMatcher.suggestionIdentity(name)
+            ?: SmartFoodMatcher.cleanFoodName(name).lowercase().trim()
+
+    /** Artifact-free display name persisted on every issued row. */
+    private fun displayNameOf(name: String): String =
+        SmartFoodMatcher.cleanFoodName(name).ifBlank { name.trim() }
+
+    /**
+     * nutrientId → canonical suggestion identities issued for that nutrient
+     * within the trailing [DEDUP_WINDOW_DAYS] (repetition fix 2026-09-23).
+     * The cache pass and the LLM pass both skip these identities so the user
+     * keeps seeing fresh options instead of the same cards every day.
+     * Failures degrade to an empty map (no dedupe, never a crash).
+     */
+    private suspend fun recentlySuggestedByNutrient(today: String): Map<String, Set<String>> =
+        runCatching {
+            val from = com.example.hoot.domain.nutrition.DayKeys.minusDays(today, DEDUP_WINDOW_DAYS)
+            nutrients.recommendationsBetween(from, today)
+                .groupBy({ it.nutrientId }, { identityOf(it.foodName) })
+                .mapValues { (_, names) -> names.toSet() }
+        }.getOrDefault(emptyMap())
+
+    /**
      * Keyword-level diet compatibility (deterministic pre-LLM filter).
      * Delegates to the central [DietRules] sets so every surface shares the
      * same exclusion vocabularies, word-boundary matching and plant-phrase
@@ -441,20 +486,38 @@ class RecommendationEngine(
         private const val TAG = "HootRecommend"
 
         /**
+         * A food suggested for a nutrient is not repeated for this many days
+         * (repetition fix 2026-09-23). Two weeks gives the cache/LLM enough
+         * rotation room while keeping the suggestions relevant.
+         */
+        private const val DEDUP_WINDOW_DAYS = 14L
+
+        /**
          * Diet restrictions are HARD constraints: violating suggestions are
          * useless output (strengthened wording, diet-fix 2026-09). The
          * deterministic [DietRules] keyword filter still gates LLM output
          * defensively in [generateForDay]/[generateForNutrient].
+         *
+         * Specificity clause (feedback 2026-09-23): the model kept emitting
+         * constraint stubs ("vegan platter", "plant-based meal") and category
+         * names — output that names no concrete item is discarded by the
+         * quality gates, so demanding single purchasable foods up front.
          */
         const val SYSTEM_PROMPT: String =
             "You are Hoot's nutrition recommender. Given gaps vs daily targets, reply with ONLY " +
                 "a JSON object {\"recommendations\":[{\"nutrient_id\":\"...\",\"food\":\"...\",\"why\":\"...\"" +
-                ",\"image_url\":\"...\"}]}. Pick common whole foods (or fortified foods for vegans where " +
-                "noted), 1 short sentence per 'why' (<=160 chars). " +
+                ",\"image_url\":\"...\"}]}. " +
+                "SPECIFICITY: 'food' MUST be ONE concrete, purchasable whole food a shopper can put " +
+                "in a cart (e.g. \"lentils\", \"canned sardines\", \"Greek yogurt\", \"boiled spinach\", " +
+                "\"fortified almond milk\") — 1-3 words. NEVER output meal names, dishes, platters, " +
+                "categories (\"vegetables\", \"nuts\"), or diet labels (\"vegan meal\", \"plant-based " +
+                "platter\"). Pick common whole foods (or fortified foods for vegans where noted), " +
+                "1 short sentence per 'why' (<=160 chars). " +
                 "diet_style and the avoid list are STRICT HARD CONSTRAINTS: " +
                 "STRICTLY EXCLUDE every food that violates them (e.g. for vegan: ALL meat, fish, " +
-                "seafood, eggs, dairy, honey; use legumes, tofu, tempeh, seitan, fortified plant " +
-                "foods instead). A suggestion that violates the diet is useless — never output one. " +
+                "seafood, eggs, dairy, honey; use lentils, chickpeas, tofu, tempeh, edamame, " +
+                "kale, chia seeds, fortified plant milks instead). A suggestion that violates the " +
+                "diet is useless — never output one. " +
                 "image_url is optional: include it ONLY if you are certain of a stable direct image URL; " +
                 "otherwise omit the field entirely."
     }
