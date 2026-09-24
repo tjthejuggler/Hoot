@@ -135,6 +135,23 @@ for no breaking changes to the existing v1 surface.
 
 ## Changelog
 
+### 2026-09-24 (9) — One core ingredient per suggestion; combinations rejected
+
+- **"Carrots in some form" ×4** — form/processing variants ("Carrots",
+  "Grated Carrot", "Carrot Juice") carry different name signatures, and the
+  homogeneous-pool backfill re-added the Jaccard-skipped duplicates verbatim.
+  [`SmartFoodMatcher.coreIngredientKey`](app/src/main/java/com/example/hoot/domain/insights/SmartFoodMatcher.kt)
+  collapses every variant to its core ingredient (singularized, stepping
+  over ONE form word so "Olive Oil"/"Canola Oil" stay distinct); selection
+  AND the backfill now enforce one card per core. Pinned in
+  `SmartFoodMatcherTest`.
+- **"Ginger & Carrots" as a suggestion** — the plausibility gate's word
+  splitter erased separators, so a two-food list looked like one food.
+  [`isPlausibleFoodName`](app/src/test/java/com/example/hoot/domain/insights/FoodNamePlausibilityTest.kt)
+  now rejects names containing `&`, `+`, `,`, `;` — recommendations are
+  single ingredients only (real compound FOOD names like "Peanut Butter"
+  are unaffected).
+
 ### 2026-09-23 (8) — Phantom kcal + "0%" recommendation hits (systemic noise floor)
 
 - **910 kcal for an 850 kcal meal** — supplement panels carry trivial

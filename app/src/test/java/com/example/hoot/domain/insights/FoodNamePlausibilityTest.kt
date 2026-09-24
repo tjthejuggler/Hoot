@@ -46,4 +46,17 @@ class FoodNamePlausibilityTest {
         assertFalse(SmartFoodMatcher.isPlausibleFoodName("Big Breakfast Plate Deluxe Supreme"))
         assertTrue(SmartFoodMatcher.isPlausibleFoodName("Peanut Butter"))
     }
+
+    @Test
+    fun `combination names are rejected (single-ingredient rule)`() {
+        // Feedback 2026-09-24: "Ginger & Carrots" surfaced as a suggestion —
+        // recommendations must be ONE ingredient, never a pair/list.
+        assertFalse(SmartFoodMatcher.isPlausibleFoodName("Ginger & Carrots"))
+        assertFalse(SmartFoodMatcher.isPlausibleFoodName("Rice + Beans"))
+        assertFalse(SmartFoodMatcher.isPlausibleFoodName("Honey, Lemon"))
+        assertFalse(SmartFoodMatcher.isPlausibleFoodName("Fish Oil; Flaxseed"))
+        // Real single foods with compound NAMES are unaffected (no separators).
+        assertTrue(SmartFoodMatcher.isPlausibleFoodName("Peanut Butter"))
+        assertTrue(SmartFoodMatcher.isPlausibleFoodName("Olive Oil"))
+    }
 }

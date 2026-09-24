@@ -321,11 +321,19 @@ object SmartFoodMatcher {
      * responsibly recommend: ≤ 4 words, no compound-title connectors, no
      * meal-occasion word, and a non-generic head noun ("Dark Beverage" and
      * "Vegan Brunch Spread" fail; "Dark chocolate" passes).
+     *
+     * Combination rejection (feedback 2026-09-24): recommendations must be
+     * SINGLE ingredients — "Ginger & Carrots" is two foods, not one
+     * purchasable item. List separators (`&`, `+`, `,`, `;`) in the cleaned
+     * name reject it. (Real food names never carry them; "and" was already
+     * covered by [TITLE_CONNECTORS].)
      */
     fun isPlausibleFoodName(raw: String): Boolean {
-        val words = cleanFoodName(raw).split(Regex("[^A-Za-z0-9]+"))
+        val cleaned = cleanFoodName(raw)
+        val words = cleaned.split(Regex("[^A-Za-z0-9]+"))
             .filter { it.isNotBlank() }
         if (words.isEmpty() || words.size > 4) return false
+        if (Regex("[&+,;]").containsMatchIn(cleaned)) return false
         val lower = words.map { it.lowercase() }
         if (lower.any { it in TITLE_CONNECTORS }) return false
         if (lower.any { it in MEAL_OCCASION_WORDS }) return false
@@ -369,6 +377,41 @@ object SmartFoodMatcher {
         return VARIANT_GROUPS.firstOrNull { g -> words.any { it in g } }
             ?.sorted()
             ?.joinToString("|")
+    }
+
+    /**
+     * Form/processing words that change how a food is SOLD, not what it IS
+     * (feedback 2026-09-24 "carrots in some form or another"): "Carrots",
+     * "Grated Carrot" and "Carrot Juice" are ONE recommendation. The core-
+     * ingredient key is the singularized last word, stepping over one
+     * trailing form word; "Olive Oil" → "olive" and "Canola Oil" → "canola"
+     * stay distinct because the form word is skipped, not the head.
+     */
+    private val FORM_WORDS: Set<String> = setOf(
+        "juice", "oil", "milk", "powder", "butter", "chip", "chips",
+        "flake", "flakes", "extract", "concentrate", "pulp", "puree",
+        "syrup", "sauce", "paste", "stick", "sticks", "strip", "strips",
+        "cube", "cubes", "slice", "slices", "tea", "drink", "water",
+        "capsule", "tablet", "supplement"
+    )
+
+    /**
+     * Core-ingredient identity for selection diversity ("some form of X" —
+     * user feedback 2026-09-24): the singularized last meaningful word,
+     * stepping over ONE trailing form word. "Carrot Juice" and "Grated
+     * Carrot" share the key "carrot"; "Olive Oil" and "Canola Oil" yield
+     * "olive"/"canola". Null when nothing meaningful remains (nulls are
+     * treated as unique, mirroring [nameSignature]).
+     */
+    fun coreIngredientKey(displayName: String): String? {
+        val words = cleanFoodName(displayName).lowercase()
+            .split(Regex("[^a-z0-9]+"))   // digits are content (nameSignature rule)
+            .filter { it.isNotBlank() && it !in NAME_MODIFIERS }
+            .map { singularize(it) }
+            .filter { it !in NAME_MODIFIERS }
+        if (words.isEmpty()) return null
+        val last = words.last()
+        return if (words.size > 1 && last in FORM_WORDS) words[words.size - 2] else last
     }
 
     // ---- Scoring ------------------------------------------------------------
@@ -486,15 +529,25 @@ object SmartFoodMatcher {
         // Pre-selection identity collapse (score-desc input keeps the best).
         val seenSignatures = HashSet<String>()
         val seenVariantFamilies = HashSet<String>()
+        val collapseCores = HashSet<String>()
         val candidates = ArrayList<SmartFoodPick>(scored.size)
         for (cand in scored) {
             val sig = nameSignature(cand.displayName)
             if (sig != null && !seenSignatures.add(sig)) continue
             val fam = variantKey(cand.displayName)
             if (fam != null && !seenVariantFamilies.add(fam)) continue
+            // Core-ingredient collapse (user feedback 2026-09-24): "Carrots",
+            // "Grated Carrot" and "Carrot Juice" share ONE core key — the
+            // user wants carrots at most once, in any form. Applied BEFORE
+            // selection so form-variants cannot win different slots. Genuinely
+            // different foods (kale/spinach/chard) keep distinct cores and are
+            // unaffected.
+            val core = coreIngredientKey(cand.displayName)
+            if (core != null && !collapseCores.add(core)) continue
             candidates += cand
         }
 
+        val pickedCores = HashSet<String>()
         for (cand in candidates) {
             if (picked.size >= max) break
             val candIds = cand.hits.map { it.nutrientId }.toSet()
@@ -502,13 +555,25 @@ object SmartFoodMatcher {
                 val pIds = p.hits.map { it.nutrientId }.toSet()
                 jaccard(candIds, pIds) > DIVERSITY_OVERLAP
             }
-            if (dup) skipped += cand else picked += cand
+            if (dup) skipped += cand
+            else {
+                picked += cand
+                coreIngredientKey(cand.displayName)?.let(pickedCores::add)
+            }
         }
         // Pool too homogeneous → relax hit-set diversity rather than return
-        // fewer. `skipped` holds only distinct-named, non-variant candidates,
-        // so this backfill cannot reintroduce redundant foods.
+        // fewer. The backfill still honors the core guarantee — a core may
+        // only (re-)enter when NO picked food has it, so "carrots in some
+        // form" can never exceed one card regardless of pool depth. Distinct
+        // cores (the Jaccard-skipped leafy greens) backfill as before.
         var si = 0
-        while (picked.size < max && si < skipped.size) picked += skipped[si++]
+        while (picked.size < max && si < skipped.size) {
+            val cand = skipped[si++]
+            val core = coreIngredientKey(cand.displayName)
+            if (core != null && core in pickedCores) continue
+            picked += cand
+            core?.let(pickedCores::add)
+        }
         return picked
     }
 

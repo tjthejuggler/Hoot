@@ -181,10 +181,13 @@ class SmartFoodMatcherTest {
     // ---- Diversity ----------------------------------------------------------------
 
     @Test
-    fun `near-identical hit sets are de-duplicated but the pool backfills`() {
-        // Three leafy-green variants all covering the SAME two gaps (Jaccard 1.0),
-        // plus one distinct food → one green wins the dedupe, eggs fills slot 2,
-        // and the backfill reuses one more green rather than returning 2 picks.
+    fun `near-identical hit sets are de-duplicated but distinct foods backfill`() {
+        // Three DIFFERENT leafy greens covering the SAME two gaps (Jaccard
+        // 1.0), plus one distinct food → one green wins the dedupe, eggs
+        // fills slot 2, and the backfill reuses one more green (distinct
+        // core) rather than returning 2 picks. Same-CORE form duplicates
+        // ("Carrot Juice" vs "Carrots") are the ones that can NEVER backfill
+        // — pinned by `one core ingredient appears at most once across forms`.
         val per100 = mapOf("magnesium" to 200.0, "vitamin_c" to 200.0)
         val picks = SmartFoodMatcher.match(
             gaps = listOf(
@@ -205,6 +208,47 @@ class SmartFoodMatcherTest {
         assertEquals("eggs", picks[1].displayName)
         val greens = picks.count { it.displayName in listOf("kale", "spinach", "chard") }
         assertEquals(2, greens)
+    }
+
+    @Test
+    fun `one core ingredient appears at most once across forms`() {
+        // The exact device report (feedback 2026-09-24): 4 of 7 picks were
+        // carrots in some form. Core-ingredient collapse must keep exactly
+        // one, even when panels differ slightly.
+        val picks = SmartFoodMatcher.match(
+            gaps = listOf(
+                gap("vitamin_a", tier = 1, target = 900.0, today = 100.0),
+                gap("vitamin_k", tier = 2, target = 120.0, today = 10.0)
+            ),
+            excesses = emptyList(),
+            foods = listOf(
+                food("carrot", name = "Carrots", serving = 100.0,
+                    per100 = mapOf("vitamin_a" to 835.0, "vitamin_k" to 13.0)),
+                food("carrot-juice", name = "Carrot Juice", serving = 240.0,
+                    per100 = mapOf("vitamin_a" to 835.0, "vitamin_k" to 13.0)),
+                food("grated-carrot", name = "Grated Carrot", serving = 80.0,
+                    per100 = mapOf("vitamin_a" to 800.0)),
+                food("sweet-potato", name = "Sweet Potato", serving = 150.0,
+                    per100 = mapOf("vitamin_a" to 709.0)),
+                food("spinach2", name = "Spinach", serving = 80.0,
+                    per100 = mapOf("vitamin_k" to 483.0))
+            ),
+            max = 6
+        )
+        val carrotPicks = picks.count {
+            SmartFoodMatcher.coreIngredientKey(it.displayName) == "carrot"
+        }
+        assertEquals(1, carrotPicks)
+    }
+
+    @Test
+    fun `form words keep distinct cores distinct`() {
+        // "Olive Oil" vs "Canola Oil": the shared form word is skipped, not
+        // collapsed — two different oils are two legitimate picks.
+        assertEquals("olive", SmartFoodMatcher.coreIngredientKey("Olive Oil"))
+        assertEquals("canola", SmartFoodMatcher.coreIngredientKey("Canola Oil"))
+        assertEquals("carrot", SmartFoodMatcher.coreIngredientKey("Grated Carrot"))
+        assertEquals("carrot", SmartFoodMatcher.coreIngredientKey("Carrot Juice"))
     }
 
     @Test
