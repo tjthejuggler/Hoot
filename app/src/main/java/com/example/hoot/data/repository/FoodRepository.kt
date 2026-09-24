@@ -17,6 +17,12 @@ class FoodRepository(
 ) {
     fun observeFoods(): Flow<List<FoodEntity>> = foodDao.observeFoods()
 
+    /** Every food row INCLUDING supplements (Settings → Food library list). */
+    fun observeAllFoods(): Flow<List<FoodEntity>> = foodDao.observeAll()
+
+    /** All resolved nutrient panels (reactive; used by the Settings Food library). */
+    fun observeProfiles(): Flow<List<FoodNutrientProfileEntity>> = profileDao.observeAll()
+
     suspend fun food(id: String): FoodEntity? = foodDao.byId(id)
 
     suspend fun foodByName(normalizedName: String): FoodEntity? =
@@ -32,4 +38,7 @@ class FoodRepository(
     suspend fun profileById(id: String): FoodNutrientProfileEntity? = profileDao.byId(id)
 
     suspend fun upsertProfile(profile: FoodNutrientProfileEntity) = profileDao.upsert(profile)
+
+    /** Removes one panel (Food library "clear nutrition data" action). */
+    suspend fun deleteProfile(id: String) = profileDao.delete(id)
 }

@@ -76,6 +76,9 @@ interface ProfileDao {
     @Query("SELECT * FROM food_nutrient_profile WHERE foodId = :foodId LIMIT 1")
     suspend fun forFood(foodId: String): FoodNutrientProfileEntity?
 
+    @Query("SELECT * FROM food_nutrient_profile")
+    fun observeAll(): Flow<List<FoodNutrientProfileEntity>>
+
     @Query("SELECT * FROM food_nutrient_profile WHERE id = :id")
     suspend fun byId(id: String): FoodNutrientProfileEntity?
 
@@ -90,6 +93,9 @@ interface ProfileDao {
 
     @Query("DELETE FROM food_nutrient_profile")
     suspend fun clearAll()
+
+    @Query("DELETE FROM food_nutrient_profile WHERE id = :id")
+    suspend fun delete(id: String)
 }
 
 /** DAO for [LookupCacheEntity] — first stop of the resolution pipeline. */

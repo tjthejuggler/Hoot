@@ -61,6 +61,7 @@ import java.time.format.DateTimeFormatter
 @Composable
 fun SettingsScreen(
     onOpenTailSetup: () -> Unit,
+    onOpenFoodLibrary: () -> Unit = {},
     viewModel: SettingsViewModel = viewModel()
 ) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
@@ -125,6 +126,9 @@ fun SettingsScreen(
                 onTest = viewModel::testMcp
             )
 
+            // ── Food library ──────────────────────────────────────────────
+            FoodLibraryCard(onOpen = onOpenFoodLibrary)
+
             // ── Dietary profile ───────────────────────────────────────────
             DietarySection(
                 settings = settings,
@@ -186,6 +190,56 @@ fun SettingsScreen(
             AboutCard()
 
             Spacer(Modifier.height(8.dp))
+        }
+    }
+}
+
+// ── Food library entry ────────────────────────────────────────────────────────
+
+/**
+ * Navigation affordance into the Food library: every food Hoot knows about
+ * with its nutrient associations, tappable to edit. Sits above the dietary
+ * profile because hand-fixing nutrition data changes what every engine reads.
+ */
+@Composable
+internal fun FoodLibraryCard(onOpen: () -> Unit) {
+    Card(
+        onClick = onOpen,
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                Modifier
+                    .size(width = 3.dp, height = 14.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(MaterialTheme.colorScheme.primary)
+            )
+            Spacer(Modifier.width(8.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Food library",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    "Browse and edit every food's nutrient associations",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Text(
+                "View ›",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary
+            )
         }
     }
 }

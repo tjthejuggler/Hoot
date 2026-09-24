@@ -49,6 +49,7 @@ import com.example.hoot.ui.input.AddMealScreen
 import com.example.hoot.ui.input.AddSupplementScreen
 import com.example.hoot.ui.insights.InsightsScreen
 import com.example.hoot.ui.intake.IntakeScreen
+import com.example.hoot.ui.library.FoodLibraryScreen
 import com.example.hoot.ui.settings.SettingsScreen
 import com.example.hoot.ui.tail.TailSetupScreen
 
@@ -72,6 +73,7 @@ const val ROUTE_TODAY_ALIAS = "Today"
 const val ROUTE_TAIL_SETUP = "tail_setup"
 const val ROUTE_ADD_MEAL = "add_meal"
 const val ROUTE_ADD_SUPPLEMENT = "add_supplement"
+const val ROUTE_FOOD_LIBRARY = "food_library"
 
 /** DataStore flag key: has the user seen the Tail setup prompt? */
 const val PREF_TAIL_PROMPT_SHOWN = "tail_setup_prompt_shown"
@@ -177,7 +179,13 @@ fun HootNavHost(navController: NavHostController = rememberNavController()) {
                 )
             }
             composable(HootRoute.SETTINGS.name) {
-                SettingsScreen(onOpenTailSetup = { navController.navigate(ROUTE_TAIL_SETUP) })
+                SettingsScreen(
+                    onOpenTailSetup = { navController.navigate(ROUTE_TAIL_SETUP) },
+                    onOpenFoodLibrary = { navController.navigate(ROUTE_FOOD_LIBRARY) }
+                )
+            }
+            composable(ROUTE_FOOD_LIBRARY) {
+                FoodLibraryScreen(onBack = { navController.popBackStack() })
             }
             composable(ROUTE_TAIL_SETUP) {
                 TailSetupScreen(onDone = { navController.popBackStack() })

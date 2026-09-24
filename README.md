@@ -28,7 +28,8 @@ food recommendations — entirely on-device, no accounts, no backend.
   (template fallback).
 - **Settings** — LLM + MCP configuration with reachability tests, Tail
   integration setup + sync controls, dietary profile, personal stats,
-  per-nutrient custom goals (RDA defaults), cache management, JSON export.
+  per-nutrient custom goals (RDA defaults), cache management, JSON export,
+  and a Food library (browse/edit every food's nutrient associations).
 - **Input** — quick-add meal (free-text ingredients, live parse preview) and
   supplement entry via the Today "+ Add" FAB.
 
@@ -134,6 +135,25 @@ for no breaking changes to the existing v1 surface.
 ---
 
 ## Changelog
+
+### 2026-09-24 (10) — Food library: browse & edit every food–nutrient association
+
+- **Settings → Food library** — new full-screen browser over the entire
+  resolved food library ([`FoodLibraryScreen`](app/src/main/java/com/example/hoot/ui/library/FoodLibraryScreen.kt)):
+  search by name, filter All / With data / No data, one row per food with a
+  per-100 g nutrient summary and association count.
+- **Per-food editor sheet** — tapping a food opens
+  [`FoodEditSheet`](app/src/main/java/com/example/hoot/ui/library/FoodLibraryScreen.kt):
+  edit any nutrient value (blank = remove), add nutrients from the seeded
+  definitions via a searchable picker, fix the per-amount/per-unit basis,
+  rename the food, or clear the panel so the pipeline re-resolves it.
+  Manual saves persist with `resolutionMethod="manual"`, `confidence=1.0`.
+- **Plumbing** — [`ProfileDao.observeAll`](app/src/main/java/com/example/hoot/data/local/dao/NutrientDao.kt)
+  + `FoodRepository.observeAllFoods/observeProfiles/deleteProfile` back the
+  reactive list ([`FoodLibraryViewModel`](app/src/main/java/com/example/hoot/ui/library/FoodLibraryViewModel.kt));
+  route `food_library` wired in
+  [`HootNavHost`](app/src/main/java/com/example/hoot/ui/HootNavHost.kt) and
+  entered via a new Settings card.
 
 ### 2026-09-24 (9) — One core ingredient per suggestion; combinations rejected
 
