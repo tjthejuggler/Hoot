@@ -217,6 +217,21 @@ class NutritionProcessor(
                 _state.value = NutritionProcessState.Idle
                 return
             }
+            // Kill-safe attempt bookkeeping (restart-churn fix, 2026-09-23):
+            // every row queued for THIS drain is bumped NOW, before any LLM
+            // work. Previously attempts were recorded only when a batch
+            // FINISHED — a process killed mid-drain (rate-guard pause, user
+            // swipes the app away) lost the bumps entirely, rows stayed
+            // below the cap forever and re-queued on every fresh launch
+            // (live DB showed 0 rows at the cap and week-old rows at
+            // attempts=0). Rows that resolve fine leave the queue via
+            // foodId/contributions regardless of the counter; genuinely
+            // hard rows now converge to the cap across launches and manual
+            // retry still resets the counters.
+            runCatching { meals.claimIngredientAttempts(ingredientGroups.flatMap { it.ingredientIds }) }
+                .onFailure { Log.w(TAG, "ingredient attempt claim failed", it) }
+            runCatching { meals.claimSupplementAttempts(supplementGroups.flatMap { it.supplementIds }) }
+                .onFailure { Log.w(TAG, "supplement attempt claim failed", it) }
             Log.i(
                 TAG,
                 "drain start: ${ingredientGroups.sumOf { it.ingredientIds.size }} ingredient rows → " +
@@ -276,9 +291,18 @@ class NutritionProcessor(
             )
 
             // ── Phase 3: parallel workers over batches (semaphore) ─────────
+            // Supplement batches go FIRST (calcium-0%-bug fix, 2026-09-23):
+            // they share the fair semaphore + rate-guard with the (much
+            // larger) food backlog, so yesterday's ordering made today's
+            // pills wait behind dozens of food LLM calls — often past the
+            // app being closed — leaving nutrientContributions empty and
+            // Insights showing 0% for every supplement-sourced nutrient.
+            // A supplement batch is ONE rate-guarded call resolving the
+            // whole group, so front-loading it costs the food queue almost
+            // nothing while guaranteeing supplement data lands immediately.
             val semaphore = Semaphore(PARALLEL_WORKERS)
             coroutineScope {
-                (foodBatches.map { Batches.Foods(it) } + suppBatches.map { Batches.Supps(it) })
+                (suppBatches.map { Batches.Supps(it) } + foodBatches.map { Batches.Foods(it) })
                     .map { batch ->
                         async(Dispatchers.IO) {
                             semaphore.withPermit {
@@ -356,13 +380,12 @@ class NutritionProcessor(
             if (!ok) missing += group
         }
         // Individual fallback: only the foods the batch failed (spec).
+        // NOTE: no markFoodGroupFailed here anymore — attempts are claimed
+        // at drain start (kill-safe bookkeeping), so a failure bump here
+        // would double-count one drain appearance as two attempts.
         for (group in missing) {
             val outcome = resolver.resolveSingleFood(group.foodKey, group.displayName, rateGuard)
-            val ok = when (outcome) {
-                is NutritionResolver.ResolveOutcome.Resolved -> applyFoodPanel(group)
-                else -> false
-            }
-            if (!ok) resolver.markFoodGroupFailed(group)
+            val ok = outcome is NutritionResolver.ResolveOutcome.Resolved && applyFoodPanel(group)
             progress.finish(ok, group.displayName, group.touchedDays)
         }
     }
@@ -398,13 +421,11 @@ class NutritionProcessor(
             val outcome = resolver.resolveSupplementGroupSingle(group.supplementIds, rateGuard)
             val ok = outcome is NutritionResolver.ResolveOutcome.Resolved ||
                 outcome is NutritionResolver.ResolveOutcome.Missing
-            // Attempt-cap EVERY terminal failure — including NotConfigured
-            // (LLM off). The old Failed-only guard left unresolvable groups
-            // at resolveAttempts=0 forever, so they re-queued on EVERY app
-            // open: the "Analyzing nutrition… N foods left" chip appeared on
-            // each fresh launch even with nothing new consumed (feedback
-            // 2026-09). Manual retry still resets the counters.
-            if (!ok) resolver.markSupplementGroupFailed(group)
+            // NOTE: no markSupplementGroupFailed here — attempts are claimed
+            // at drain start (kill-safe bookkeeping above), so terminal
+            // failures (including NotConfigured) already burned their
+            // attempt and converge to the cap across launches without any
+            // post-hoc bump. Manual retry still resets the counters.
             progress.finish(ok, group.displayName, group.touchedDays)
         }
     }

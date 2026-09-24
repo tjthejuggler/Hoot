@@ -112,6 +112,15 @@ interface IngredientDao {
     /** Manual-retry hook: give every unresolved row a fresh set of attempts. */
     @Query("UPDATE ingredients SET resolveAttempts = 0 WHERE foodId IS NULL")
     suspend fun resetResolveAttempts()
+
+    /**
+     * Claim-time attempt bookkeeping (restart-churn fix, 2026-09-23): bumps
+     * every row queued for THIS drain BEFORE any LLM work starts. A process
+     * killed mid-drain still records the attempt, so rows converge to the
+     * attempt cap across launches instead of re-queueing forever.
+     */
+    @Query("UPDATE ingredients SET resolveAttempts = resolveAttempts + 1 WHERE id IN (:ids)")
+    suspend fun bumpResolveAttempts(ids: List<String>)
 }
 
 /** DAO for [SupplementEntity] — Tail "Took Pills" entries. */
@@ -170,6 +179,10 @@ interface SupplementDao {
     /** Manual-retry hook: give every unresolved row a fresh set of attempts. */
     @Query("UPDATE supplements SET resolveAttempts = 0 WHERE nutrientContributions = '[]' AND resolvedFoodId IS NULL")
     suspend fun resetResolveAttempts()
+
+    /** Kill-safe claim bookkeeping — see [IngredientDao.bumpResolveAttempts]. */
+    @Query("UPDATE supplements SET resolveAttempts = resolveAttempts + 1 WHERE id IN (:ids)")
+    suspend fun bumpResolveAttempts(ids: List<String>)
 
     @Query("DELETE FROM supplements")
     suspend fun clearAll()

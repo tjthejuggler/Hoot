@@ -112,12 +112,22 @@ class IntakeAggregator(
             }
 
             // ── Supplements: contributions already per-serving canonical ───
+            // ENERGY MACROS ARE SKIPPED (user feedback 2026-09-23): LLM
+            // supplement panels report trivial per-serving energy ("Glutamine
+            // 10 g" → 40 kcal, omega-3 → 10 kcal) which previously summed
+            // into the same Energy figure as meals — a day with ONE 850 kcal
+            // meal displayed 910 kcal and the user counted the phantom 60.
+            // The energy/macros card reflects FOOD; pills contribute
+            // micronutrients (their macro content is derivatve noise, not a
+            // food the user ate). Protein from meal-replacement shakes still
+            // counts via its panel `protein` key — only `calories` is dropped.
             for (supp in meals.supplementsByDay(day)) {
                 val values = runCatching { JSONObject(supp.nutrientContributions) }.getOrNull() ?: continue
                 for (rawKey in values.keys()) {
+                    val nutrientId = NutrientKeys.canonicalId(rawKey) ?: rawKey
+                    if (nutrientId == "calories") continue   // see block comment
                     val amount = values.optDouble(rawKey, Double.NaN)
                     if (amount.isNaN() || amount <= 0) continue
-                    val nutrientId = NutrientKeys.canonicalId(rawKey) ?: rawKey
                     val canonical = Units.canonicalNutrientAmount(
                         nutrientId, amount, null, unitsById[nutrientId] ?: continue
                     ) ?: continue

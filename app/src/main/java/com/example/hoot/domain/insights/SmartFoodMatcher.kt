@@ -137,6 +137,20 @@ object SmartFoodMatcher {
     const val MIN_SCORE = 0.15
 
     /**
+     * Noise floor for GAP hits (systemic "0%"-card fix, 2026-09-23): a
+     * nutrient only counts as a hit when ONE SERVING covers at least this
+     * share of the REMAINING daily deficit. Below the floor the serving
+     * amount rounds to "0 g / 0%" in the UI while the card still cites the
+     * nutrient as a reason — the "nori for potassium/fiber (0%)" and
+     * "coconut oil for choline (0%)" absurdities. The excess side has had
+     * its noise guard ([CAUTION_SERVING_SHARE]) since the section shipped;
+     * this is the gap-side counterpart. 3% of a full day's deficit is a
+     * defensible minimum claim; trace nutrients in token amounts (nori's
+     * 21 mg potassium vs a 2600 mg deficit = 0.8%) no longer qualify.
+     */
+    const val MIN_HIT_COVERAGE = 0.03
+
+    /**
      * Diversity: two picks whose PRIMARY hit sets overlap more than this
      * (Jaccard over hit nutrient ids) are considered duplicates.
      */
@@ -376,7 +390,11 @@ object SmartFoodMatcher {
             if (per100 <= 0) continue
             val servingAmount = per100 * grams
             val covered = (servingAmount / gap.remainingDeficit).coerceIn(0.0, 1.0)
-            if (covered <= 0) continue
+            // Noise floor: a serving must move the needle on the remaining
+            // deficit for the nutrient to be CITED as a reason (see
+            // [MIN_HIT_COVERAGE]). Without this, any per100 > 0 qualified
+            // and trace amounts surfaced as "… 0%" hit rows.
+            if (covered < MIN_HIT_COVERAGE) continue
             hits += SmartNutrientHit(
                 nutrientId = gap.nutrientId, name = gap.name, unit = gap.unit,
                 deficitCovered = covered, servingAmount = servingAmount

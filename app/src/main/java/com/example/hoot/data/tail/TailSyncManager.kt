@@ -78,6 +78,7 @@ class TailSyncManager(
             val cfg = tailConfig.tailConfig() ?: config
             try {
                 var mealsInserted = 0
+                var mealsUpdated = 0
                 var supplementsInserted = 0
                 var mealLogsUnavailable = false
                 var waterInserted = 0
@@ -85,9 +86,22 @@ class TailSyncManager(
                 val syncedIds = mutableListOf<String>()
 
                 // ── Meal habit ────────────────────────────────────────────
+                // ALWAYS full-pull (hollow-meal refresh fix, 2026-09-23): Tail
+                // creates meal rows as sparse placeholders ("Meal", 0 kcal,
+                // no ingredients) and fills them IN-PLACE when its async
+                // analysis lands — rewriting the creation timestamp to the
+                // canonical (EARLIER) log instant. The old `?after=`
+                // incremental pull (strictly-greater filter) therefore never
+                // re-served the enriched row: Hoot kept the hollow row
+                // forever, so "Consumed so far today" showed no meal / wrong
+                // macros while Tail showed the analyzed meal (and hollow
+                // texts fed junk entries into the resolution queue). Stable
+                // entry-id dedup keys make the full pull idempotent; changed
+                // payloads are detected per row by ingest.
+                var mealDays: Set<String> = emptySet()
                 val mealHabit = cfg.mealHabitName
                 if (mealHabit != null) {
-                    when (val result = tailClient.fetchMealLogs(pkg, mealHabit, cfg.lastMealSyncAt)) {
+                    when (val result = tailClient.fetchMealLogs(pkg, mealHabit, null)) {
                         is MealLogsResult.Available -> {
                             val (rows, maxTs) = mealEntities(result.entries)
                             // Preserving ingest: re-served entry ids must not
@@ -98,6 +112,8 @@ class TailSyncManager(
                             val ings = mealIngredientEntities(result.entries)
                             val counts = meals.ingestPreservingResolution(rows, emptyList(), ings)
                             mealsInserted = counts.meals
+                            mealsUpdated = counts.mealsUpdated
+                            mealDays = counts.changedDays.toSet()
                             syncedIds += rows.map { it.id }
                             tailConfig.updateSyncCursor(maxTs, null)
                         }
@@ -105,11 +121,13 @@ class TailSyncManager(
                             // v1 surface: ingest the meal habit's shared TEXT
                             // entries (if the user shares it) as raw-text meals.
                             mealLogsUnavailable = true
-                            val history = tailClient.fetchFullHistory(pkg, mealHabit, cfg.lastMealSyncAt)
+                            val history = tailClient.fetchFullHistory(pkg, mealHabit, null)
                             val (rows, maxTs) = textMealEntities(history.entries, mealHabit)
                             val ings = textMealIngredientEntities(history.entries, mealHabit)
                             val counts = meals.ingestPreservingResolution(rows, emptyList(), ings)
                             mealsInserted = counts.meals
+                            mealsUpdated = counts.mealsUpdated
+                            mealDays = counts.changedDays.toSet()
                             syncedIds += rows.map { it.id }
                             tailConfig.updateSyncCursor(maxTs, null)
                         }
@@ -179,13 +197,23 @@ class TailSyncManager(
                     tailConfig.updateSyncCursor(null, null, null, maxMiscTs)
                 }
 
+                // Changed meal payloads (hollow placeholders rewritten by
+                // Tail's async analysis) alter rawText/macros → the affected
+                // days' ledgers must be recomputed NOW, not on the next
+                // generic refresh; new ingredient rows also need the
+                // resolver queue drained.
+                if (mealDays.isNotEmpty()) {
+                    runCatching { aggregator.recomputeDays(mealDays.toList()) }
+                        .onFailure { android.util.Log.e(TAG, "meal-change ledger recompute failed", it) }
+                }
                 val success = TailSyncState.Success(
                     mealsInserted = mealsInserted,
                     supplementsInserted = supplementsInserted,
                     full = firstRun,
                     mealLogsUnavailable = mealLogsUnavailable,
                     waterInserted = waterInserted,
-                    miscInserted = miscInserted
+                    miscInserted = miscInserted,
+                    mealsUpdated = mealsUpdated
                 )
                 _state.value = success
                 if (syncedIds.isNotEmpty()) tailConfig.rememberEntryIds(syncedIds)

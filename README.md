@@ -135,6 +135,66 @@ for no breaking changes to the existing v1 surface.
 
 ## Changelog
 
+### 2026-09-23 (8) — Phantom kcal + "0%" recommendation hits (systemic noise floor)
+
+- **910 kcal for an 850 kcal meal** — supplement panels carry trivial
+  per-serving energy (glutamine 40 kcal, omega-3 10 kcal) that summed into
+  the same Energy figure as meals. [`IntakeAggregator`](app/src/main/java/com/example/hoot/domain/nutrition/IntakeAggregator.kt)
+  now skips the `calories` key on supplement contributions: the Energy card
+  reflects FOOD; pills still contribute micronutrients. Verified on-device:
+  today's ledger reads exactly 850 kcal.
+- **"Nori for potassium/fiber — 0%" and "Coconut oil for choline — 0%"** —
+  the smart-picks matcher credited ANY nutrient with per100 > 0; a 2 g nori
+  sheet's 21 mg potassium (0.8% of the deficit) became a hit the UI rounded
+  to "0 g · 0%" while citing it as the reason. Root fix:
+  [`SmartFoodMatcher.MIN_HIT_COVERAGE`](app/src/main/java/com/example/hoot/domain/insights/SmartFoodMatcher.kt)
+  (3% of the remaining daily deficit) — a serving must move the needle to be
+  cited, mirroring the excess side's existing noise guard. Regression suite:
+  `SmartPicksNoiseFloorTest` (nori/coconut-oil replicas, mixed-hit filtering).
+
+### 2026-09-23 (7) — Hollow-meal refresh (Tail in-place analysis now lands in Hoot)
+
+- **"Consumed so far today" showed no meal / wrong macros while Tail showed
+  the analyzed meal** — Tail creates meal rows as sparse placeholders
+  ("Meal", 0 kcal, no ingredients) and fills them IN-PLACE when its async
+  analysis lands, rewriting the creation timestamp to the canonical (earlier)
+  log instant. The `?after=` incremental meal pull (strictly-greater filter,
+  cursor pinned at the creation moment) therefore never re-served the
+  enriched row.
+- **Fix** — meals are now ALWAYS full-pulled like water ([`TailSyncManager`](app/src/main/java/com/example/hoot/data/tail/TailSyncManager.kt));
+  [`MealRepository.ingestPreservingResolution`](app/src/main/java/com/example/hoot/data/repository/MealRepository.kt)
+  detects changed payloads per row ([`mealPayloadChanged`](app/src/test/java/com/example/hoot/data/tail/TailMealPayloadChangeTest.kt)
+  — content AND canonical-timestamp rewrites), merges the enriched payload,
+  replaces the stale ingredient rows parsed from the hollow text (the source
+  of the junk "Meal (0 kcal)" queue entries), recomputes the changed days'
+  ledgers immediately and kicks the resolver. Stable entry-id dedup keys keep
+  the full pull idempotent; verified on-device: today's row became "Beyond
+  Burger with Quinoa, Veggies and Guacamole" (850 kcal, 38/75/42 g) and the
+  ledger matched Tail (910 kcal / 48 g protein / 75 g carbs), pending queue
+  still 0/0 after restart.
+
+### 2026-09-23 (6) — Kill-safe resolution queue + supplements-first drain
+
+- **Eternal "Analyzing nutrition… N foods left" loop fixed** — attempt
+  bookkeeping moved from batch-*finish* to drain-start *claim*
+  ([`MealDao.bumpResolveAttempts`](app/src/main/java/com/example/hoot/data/local/dao/MealDao.kt),
+  [`MealRepository.claimIngredientAttempts` / `claimSupplementAttempts`](app/src/main/java/com/example/hoot/data/repository/MealRepository.kt),
+  claim at the top of
+  [`NutritionProcessor.drainPending`](app/src/main/java/com/example/hoot/domain/nutrition/NutritionProcessor.kt)).
+  Previously a process killed mid-drain (rate-guard pause, swipe-away) lost
+  every bump: rows stayed under the cap forever and re-queued on each launch
+  (live DB: 0 rows at the cap, week-old rows at attempts=0, chip 25→83 with
+  nothing new eaten). Rows now converge to the cap across launches; the
+  redundant post-failure bumps were removed so one drain = one attempt.
+- **Supplements no longer show 0% in Insights** — supplement LLM batches are
+  scheduled BEFORE food batches in the drain (same file). They previously
+  starved behind the much larger food backlog on the shared semaphore +
+  rate guard, so `nutrientContributions` stayed `[]` and the ledger credited
+  nothing for any supplement-sourced nutrient (user's calcium pill read 0%).
+  Verified on-device: today's Calcium row now carries `{"calcium":500}` and
+  the 2026-09-23 ledger shows calcium/magnesium/zinc/D/B12/C from pills;
+  pending queue reads 0/0 after restart (no re-inflation).
+
 ### 2026-09-23 (5) — Dish-noun gate (bare "Sandwich" class)
 
 - `SmartFoodMatcher` gains `DISH_NOUNS`: composed-food nouns ("sandwich",

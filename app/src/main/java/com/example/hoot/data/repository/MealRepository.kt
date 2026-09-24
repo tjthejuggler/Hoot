@@ -66,6 +66,17 @@ class MealRepository(
 
     suspend fun updateIngredient(ingredient: IngredientEntity) = ingredientDao.upsert(ingredient)
 
+    /**
+     * Claim-time attempt bookkeeping (restart-churn fix, 2026-09-23): every
+     * row queued for THIS drain is bumped BEFORE the LLM work starts, so a
+     * process killed mid-drain still records the attempt and rows converge
+     * to the attempt cap across launches. Successful rows leave the queue
+     * via foodId regardless of the counter.
+     */
+    suspend fun claimIngredientAttempts(ids: List<String>) {
+        if (ids.isNotEmpty()) ingredientDao.bumpResolveAttempts(ids)
+    }
+
     /** Bumps the failure counter after a failed resolution attempt. */
     suspend fun markIngredientFailed(ingredient: IngredientEntity) =
         ingredientDao.upsert(ingredient.copy(resolveAttempts = ingredient.resolveAttempts + 1))
@@ -94,9 +105,10 @@ class MealRepository(
 
     suspend fun unresolvedSupplementCount(): Int = supplementDao.unresolvedCount()
 
-    /** Bumps the failure counter after a failed resolution attempt. */
-    suspend fun markSupplementFailed(supplement: SupplementEntity) =
-        supplementDao.upsert(supplement.copy(resolveAttempts = supplement.resolveAttempts + 1))
+    /** Kill-safe claim bookkeeping — see [claimIngredientAttempts]. */
+    suspend fun claimSupplementAttempts(ids: List<String>) {
+        if (ids.isNotEmpty()) supplementDao.bumpResolveAttempts(ids)
+    }
 
     suspend fun supplementByLabel(label: String): SupplementEntity? =
         supplementDao.byLabel(label)
@@ -112,8 +124,20 @@ class MealRepository(
 
     // ---- Resolution-state-preserving ingest (restart re-analysis fix) -----
 
-    /** Rows that were GENUINELY NEW (unchanged re-served upserts excluded). */
-    data class IngestCounts(val meals: Int, val supplements: Int)
+    /**
+     * Rows that were GENUINELY NEW (unchanged re-served upserts excluded).
+     * [mealsUpdated] counts EXISTING rows whose Tail payload changed (Tail
+     * fills meal placeholders in-place after its async analysis — the
+     * hollow "Meal (0 kcal)" row is rewritten with title/macros/ingredients
+     * and an EARLIER canonical timestamp); [changedDays] lists the days
+     * whose ledger must be recomputed as a result.
+     */
+    data class IngestCounts(
+        val meals: Int,
+        val supplements: Int,
+        val mealsUpdated: Int = 0,
+        val changedDays: List<String> = emptyList()
+    )
 
     /**
      * Upserts freshly-mapped Tail rows WITHOUT clobbering persisted
@@ -149,23 +173,75 @@ class MealRepository(
             supplementDao.upsertAll(merged)
         }
         var newMeals = 0
+        var updatedMeals = 0
+        val changedDays = LinkedHashSet<String>()
         if (meals.isNotEmpty()) {
-            val existingMealIds = mealDao.byIds(meals.map { it.id }).map { it.id }.toSet()
-            newMeals = meals.count { it.id !in existingMealIds }
+            val existingById = mealDao.byIds(meals.map { it.id }).associateBy { it.id }
+            newMeals = meals.count { it.id !in existingById }
+            // Payload-change detection (hollow-meal refresh fix, 2026-09-23):
+            // Tail creates meal rows as sparse placeholders ("Meal", 0 kcal)
+            // and fills them in-place once its async analysis lands — with a
+            // canonical (earlier) timestamp. The incremental cursor can never
+            // re-serve such rows, so the sync full-pulls and we merge the
+            // enriched payload here.
+            val changed = meals.filter { fresh ->
+                existingById[fresh.id]?.let { mealPayloadChanged(it, fresh) } == true
+            }
+            updatedMeals = changed.size
             mealDao.upsertAll(meals)
+            for (m in changed) { existingById[m.id]?.day?.let(changedDays::add); m.day.let(changedDays::add) }
             if (ingredients.isNotEmpty()) {
                 val mealsWithRows = allIngredientsForMeals(ingredients.map { it.mealId }.distinct())
                     .map { it.mealId }.toSet()
                 val fresh = ingredients.filter { it.mealId !in mealsWithRows }
                 if (fresh.isNotEmpty()) ingredientDao.insertAll(fresh)
+                // Changed meals: their stored ingredient rows were parsed from
+                // the STALE placeholder rawText ("Meal (0 kcal)" — the source
+                // of the junk unresolved-queue entries). Replace them with
+                // rows parsed from the enriched payload; fresh rows carry
+                // resolveAttempts=0 so the resolver picks them up cleanly.
+                val changedIds = changed.map { it.id }.toSet()
+                for (mealId in changedIds) {
+                    val freshRows = ingredients.filter { it.mealId == mealId }
+                    if (freshRows.isNotEmpty()) {
+                        ingredientDao.deleteForMeal(mealId)
+                        ingredientDao.insertAll(freshRows)
+                    }
+                }
             }
         }
-        return IngestCounts(meals = newMeals, supplements = newSupplements)
+        return IngestCounts(
+            meals = newMeals,
+            supplements = newSupplements,
+            mealsUpdated = updatedMeals,
+            changedDays = changedDays.toList()
+        )
     }
 
     companion object {
         /** Attempts before an item leaves the auto-retry queue (manual retry resets). */
         const val RESOLVE_ATTEMPT_CAP = 3
+
+        /**
+         * True when a re-served Tail meal row carries DIFFERENT content than
+         * the stored row (pure, JVM-testable). Timestamp/day are compared
+         * too: Tail's async analysis rewrites the placeholder's creation
+         * timestamp to the canonical log instant, which is how the enriched
+         * row must be detected even when every other column happened to
+         * match.
+         */
+        fun mealPayloadChanged(existing: MealEntity, fresh: MealEntity): Boolean =
+            existing.title != fresh.title ||
+                existing.rawText != fresh.rawText ||
+                existing.summary != fresh.summary ||
+                existing.calories != fresh.calories ||
+                existing.proteinGrams != fresh.proteinGrams ||
+                existing.carbsGrams != fresh.carbsGrams ||
+                existing.fatGrams != fresh.fatGrams ||
+                existing.isVegan != fresh.isVegan ||
+                existing.healthNotes != fresh.healthNotes ||
+                existing.timestamp != fresh.timestamp ||
+                existing.day != fresh.day
 
         /**
          * Pure merge: when an existing row already carries resolution state

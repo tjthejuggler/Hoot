@@ -44,10 +44,15 @@ internal class NutritionPipeline(
     /** Launches every collector. Call once, after all dependencies are wired. */
     fun start() {
         // After each Tail sync that ingested rows, resolve what's pending.
+        // Updated rows count too (hollow-meal refresh fix, 2026-09-23):
+        // Tail rewrites placeholder meals in-place with the analyzed
+        // payload — their replacement ingredient rows need the resolver.
         scope.launch {
             tailSync.syncState.collect { state ->
                 val ingested = state as? TailSyncState.Success ?: return@collect
-                if (ingested.mealsInserted > 0 || ingested.supplementsInserted > 0) {
+                if (ingested.mealsInserted > 0 || ingested.supplementsInserted > 0 ||
+                    ingested.mealsUpdated > 0
+                ) {
                     nutritionProcessor.kick()
                 }
             }

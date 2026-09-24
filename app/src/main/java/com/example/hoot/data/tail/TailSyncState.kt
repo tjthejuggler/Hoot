@@ -23,7 +23,9 @@ sealed interface TailSyncState {
         val mealLogsUnavailable: Boolean,
         /** v5: water/misc habit rows written (0 when those habits are unmapped). */
         val waterInserted: Int = 0,
-        val miscInserted: Int = 0
+        val miscInserted: Int = 0,
+        /** Existing rows whose Tail payload changed (hollow placeholder → enriched, 2026-09-23). */
+        val mealsUpdated: Int = 0
     ) : TailSyncState
 
     data class Error(val message: String) : TailSyncState

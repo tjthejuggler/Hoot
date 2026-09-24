@@ -368,21 +368,9 @@ class NutritionResolver(
         allowLlm: Boolean = true
     ): ResolveOutcome = supplementTier.resolveSupplementGroupSingle(supplementIds, rateGuard, allowLlm)
 
-    /** Attempt-cap bookkeeping for every row of a failed food group. */
-    suspend fun markFoodGroupFailed(group: FoodGrouper.FoodGroup) {
-        for (id in group.ingredientIds) {
-            runCatching { meals.ingredient(id)?.let { meals.markIngredientFailed(it) } }
-                .onFailure { Log.w(TAG, "markIngredientFailed($id) failed", it) }
-        }
-    }
-
-    /** Attempt-cap bookkeeping for every row of a failed supplement group. */
-    suspend fun markSupplementGroupFailed(group: FoodGrouper.SupplementGroup) {
-        for (id in group.supplementIds) {
-            runCatching { meals.supplementsByIds(listOf(id)).firstOrNull()?.let { meals.markSupplementFailed(it) } }
-                .onFailure { Log.w(TAG, "markSupplementFailed($id) failed", it) }
-        }
-    }
+    // Attempt-cap bookkeeping moved to the processor's drain-start CLAIM
+    // (kill-safe, 2026-09-23): rows are bumped when queued for a drain, not
+    // when their batch finishes — a killed process no longer loses the count.
 
     // ── Supplement resolution (delegates) ────────────────────────────────
 
