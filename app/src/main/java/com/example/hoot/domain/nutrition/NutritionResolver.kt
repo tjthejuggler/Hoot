@@ -8,6 +8,7 @@ import com.example.hoot.data.local.entity.FoodNutrientProfileEntity
 import com.example.hoot.data.local.entity.IngredientEntity
 import com.example.hoot.data.remote.LlmClient
 import com.example.hoot.data.remote.LlmConfig
+import com.example.hoot.data.repository.FoodKnowledgeRepository
 import com.example.hoot.data.repository.MealRepository
 import com.example.hoot.data.repository.NutrientRepository
 import kotlinx.coroutines.Dispatchers
@@ -35,9 +36,10 @@ class NutritionResolver(
     private val nutrients: NutrientRepository,
     private val meals: MealRepository,
     private val settings: SettingsRepository,
-    private val llm: LlmClient
+    private val llm: LlmClient,
+    private val knowledge: FoodKnowledgeRepository? = null
 ) {
-    private val store = ResolutionStore(nutrients)
+    private val store = ResolutionStore(nutrients, knowledge)
     private val supplementTier = SupplementResolver(meals, settings, llm, store)
     private val webTier = WebResolution(llm)
 

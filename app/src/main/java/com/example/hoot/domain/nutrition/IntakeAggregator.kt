@@ -69,10 +69,16 @@ class IntakeAggregator(
                     // time; when a legacy row is missing it, fall back to the
                     // food's own serving hint / portion default so count-unit
                     // ingredients no longer silently contribute 0 (bug: Today
-                    // showed 0 for everything except iron).
+                    // showed 0 for everything except iron). The serving hint is
+                    // ALSO the portion default: Tail-synced ingredient rows
+                    // often carry no amount/unit at all, and passing null here
+                    // dropped the entire ingredient — silently zeroing every
+                    // nutrient only that ingredient supplied (added sugars,
+                    // iodine, chloride… "no data" in week/month windows,
+                    // bug 2026-09-29).
                     val grams = ing.gramsEstimate ?: ing.foodId
                         ?.let { nutrients.food(it)?.typicalServingGrams }
-                        ?.let { IngredientParser.gramsEstimate(ing.amount, ing.unit, it, null) }
+                        ?.let { IngredientParser.gramsEstimate(ing.amount, ing.unit, it, it) }
                         ?: continue
                     val values = runCatching { JSONObject(profile.valuesJson) }.getOrNull() ?: continue
                     val scale = grams / profile.perAmount

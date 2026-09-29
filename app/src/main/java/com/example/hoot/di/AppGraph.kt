@@ -4,6 +4,7 @@ import android.content.Context
 import com.example.hoot.data.local.HootDatabase
 import com.example.hoot.data.local.SettingsRepository
 import com.example.hoot.data.remote.LlmClient
+import com.example.hoot.data.repository.FoodKnowledgeRepository
 import com.example.hoot.data.repository.FoodRepository
 import com.example.hoot.data.repository.IntakeRepository
 import com.example.hoot.data.repository.LookupCacheRepository
@@ -21,6 +22,7 @@ import com.example.hoot.data.tail.EchoRegistry
 import com.example.hoot.data.tail.TailClient
 import com.example.hoot.data.tail.TailPushClient
 import com.example.hoot.data.tail.TailSyncManager
+import com.example.hoot.domain.insights.GapResearcher
 import com.example.hoot.domain.insights.RecommendationEngine
 import com.example.hoot.domain.insights.SmartFoodProvider
 import com.example.hoot.domain.nutrition.IntakeAggregator
@@ -69,6 +71,13 @@ class AppGraph(context: Context) {
     val intakeRepo = IntakeRepository(database.intakeDao())
     val foods = FoodRepository(database.foodDao(), database.profileDao())
     val lookupCache = LookupCacheRepository(database.lookupCacheDao(), database.sourceDao())
+
+    /**
+     * Permanent food-knowledge base (feedback 2026-09-27): every researched
+     * food lands here forever with its panel + high-in index — the amassing
+     * "what is high in what" database recommendations draw from.
+     */
+    val foodKnowledge = FoodKnowledgeRepository(database.foodKnowledgeDao())
     val supplements = SupplementRepository(database.supplementDao())
     val recommendations = RecommendationRepository(database.recommendationDao())
     val scoreSnapshots = ScoreSnapshotRepository(database.scoreSnapshotDao())
@@ -173,7 +182,8 @@ class AppGraph(context: Context) {
         nutrients = nutrients,
         meals = meals,
         settings = settings,
-        llm = llmClient
+        llm = llmClient,
+        knowledge = foodKnowledge
     )
 
     /**
@@ -207,7 +217,21 @@ class AppGraph(context: Context) {
     val smartFoodProvider = SmartFoodProvider(
         nutrients = nutrients,
         tailConfig = tailConfig,
-        settings = settings
+        settings = settings,
+        knowledge = foodKnowledge
+    )
+
+    /**
+     * Gap-targeted research (feedback 2026-09-27): one LLM discovery call for
+     * foods rich in the CURRENT gaps, resolved through the standard pipeline
+     * and persisted into [foodKnowledge] — the knowledge base grows toward
+     * exactly the nutrients this user is short on.
+     */
+    val gapResearcher = GapResearcher(
+        resolver = nutritionResolver,
+        knowledge = foodKnowledge,
+        settings = settings,
+        llm = llmClient
     )
 
     /**

@@ -3,8 +3,10 @@ package com.example.hoot.domain.insights
 import android.util.Log
 import com.example.hoot.data.local.SettingsRepository
 import com.example.hoot.data.local.entity.FoodNutrientProfileEntity
+import com.example.hoot.data.repository.FoodKnowledgeRepository
 import com.example.hoot.data.repository.NutrientRepository
 import com.example.hoot.data.repository.TailConfigRepository
+import com.example.hoot.domain.nutrition.FoodKnowledgeIndex
 import com.example.hoot.domain.nutrition.SeedFoodLibrary
 import org.json.JSONArray
 import org.json.JSONObject
@@ -25,7 +27,8 @@ import org.json.JSONObject
 class SmartFoodProvider(
     private val nutrients: NutrientRepository,
     private val tailConfig: TailConfigRepository,
-    private val settings: SettingsRepository
+    private val settings: SettingsRepository,
+    private val knowledge: FoodKnowledgeRepository? = null
 ) {
 
     companion object {
@@ -190,11 +193,18 @@ class SmartFoodProvider(
         val seed = seedTopUp(candidates)
         val pool = candidates + seed
 
+        // Knowledge-base top-up (feedback 2026-09-27): every food the user
+        // EVER researched — beyond the current cache window — joins the pool
+        // here. Amassed knowledge makes recommendations grow richer over time
+        // and lets gap-targeted research immediately surface its findings.
+        val kbTopUp = knowledgeTopUp(candidates + seed)
+
         // Cleaned display names (feedback 2026-09-21): Tail/LLM segmentation
         // artifacts ("Plus Seaweed Sheets.", "… (700 Kcal)") must not leak
         // into suggestion cards. Cleaning is display-only — ids/keys keep the
         // raw values so cache resolution stays stable.
-        val cleanedPool = pool.map { it.copy(displayName = SmartFoodMatcher.cleanFoodName(it.displayName)) }
+        val cleanedPool = (pool + kbTopUp)
+            .map { it.copy(displayName = SmartFoodMatcher.cleanFoodName(it.displayName)) }
             // Plausibility gate (quality rework 2026-09-22): DB rows whose
             // names are not concrete single foods ("Dark Beverage", compound
             // meal titles) never become recommendations.
@@ -220,12 +230,12 @@ class SmartFoodProvider(
             TAG,
             "smartPicks($day): gaps=${smartGaps.size} excess=${excesses.size} " +
                 "cacheOk=${candidates.size} seedTop=${seed.size} " +
-                "pool=${pool.size} picks=${picks.size} allPicks=${allPicks.size} " +
-                "deep=${deepPicks.size}"
+                "kbTop=${kbTopUp.size} pool=${cleanedPool.size} " +
+                "picks=${picks.size} allPicks=${allPicks.size} deep=${deepPicks.size}"
         )
         return SmartPicksResult(
             picks, allPicks, smartGaps.size, candidates.size,
-            llmUsed = false, poolSize = pool.size, deepPicks = deepPicks
+            llmUsed = false, poolSize = cleanedPool.size, deepPicks = deepPicks
         ).also { memo(sig, it) }
     }
 
@@ -289,6 +299,41 @@ class SmartFoodProvider(
                     per100 = food.per100
                 )
             }
+    }
+
+    /**
+     * Knowledge-base candidates the cache/seed pools don't already cover,
+     * as scoring foods. `kb:` id prefix keeps them distinguishable; rows
+     * without a usable panel are skipped; name-signature dedupe mirrors the
+     * seed top-up so the same food never enters the pool twice.
+     */
+    private suspend fun knowledgeTopUp(
+        existing: List<SmartCandidateFood>
+    ): List<SmartCandidateFood> {
+        val kb = knowledge ?: return emptyList()
+        val seenIds = existing.mapTo(HashSet()) { it.foodId }
+        val seenNames = existing.mapTo(HashSet()) {
+            SmartFoodMatcher.nameSignature(it.displayName)
+        }
+        val out = ArrayList<SmartCandidateFood>()
+        for (row in runCatching { kb.all() }.getOrDefault(emptyList())) {
+            val id = "kb:${row.normalizedName}"
+            if (id in seenIds) continue
+            val values = FoodKnowledgeIndex.valuesFromJson(row.valuesJson)
+            if (values.isEmpty()) continue
+            val sig = SmartFoodMatcher.nameSignature(row.displayName)
+            if (sig != null && sig in seenNames) continue
+            out += SmartCandidateFood(
+                foodId = id,
+                displayName = row.displayName,
+                category = null,
+                servingGrams = null,
+                per100 = values
+            )
+            seenIds += id
+            sig?.let { seenNames += it }
+        }
+        return out
     }
 
     private fun parseStringList(json: String?): List<String> {

@@ -136,6 +136,33 @@ for no breaking changes to the existing v1 surface.
 
 ## Changelog
 
+### 2026-09-27 (11) — Permanent food-knowledge base + expanded smart-pick details
+
+- **New `food_knowledge` table (Room v6→v7, additive)**: every food the
+  resolution pipeline researches — seed, LLM or MCP web — is remembered
+  FOREVER with its per-100 g panel, a derived "high in" nutrient index
+  (≥ 15% RDA per 100 g, density fallback for RDA-less nutrients),
+  provenance URLs and research bookkeeping. Survives cache clears; grows
+  into a private "what is high in what" database over time
+  ([`FoodKnowledgeEntity`](app/src/main/java/com/example/hoot/data/local/entity/FoodKnowledgeEntity.kt),
+  [`FoodKnowledgeRepository`](app/src/main/java/com/example/hoot/data/repository/FoodKnowledgeRepository.kt),
+  [`FoodKnowledgeIndex`](app/src/main/java/com/example/hoot/domain/nutrition/FoodKnowledgeIndex.kt)).
+- **Smart picks now draw from the knowledge base**: [`SmartFoodProvider`](app/src/main/java/com/example/hoot/domain/insights/SmartFoodProvider.kt)
+  merges KB rows into the candidate pool (name-signature deduped against
+  cache + seed), so amassed foods feed recommendations even after they age
+  out of the TTL lookup cache.
+- **"Find more foods online for these gaps"** ([`GapResearcher`](app/src/main/java/com/example/hoot/domain/insights/GapResearcher.kt)):
+  one LLM discovery call proposes foods exceptionally rich in the user's
+  CURRENT gaps; new ones resolve through the standard batch pipeline and
+  land in the knowledge base tagged with the gaps they were researched for.
+  Old recommendations grow richer exactly where the user is deficient.
+- **Much bigger expansion when tapping a pick**: the detail sheet now shows
+  the knowledge-base "High in:" line, the FULL per-100 g nutrition panel
+  (richest first, high-in rows highlighted) and up to 8 related picks
+  covering the same gaps (tap to swap). The "See all" sheet window widened
+  15 → 25, shows a live knowledge-base counter and carries the research
+  action with a progress state.
+
 ### 2026-09-24 (10) — Food library: browse & edit every food–nutrient association
 
 - **Settings → Food library** — new full-screen browser over the entire

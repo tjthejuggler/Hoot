@@ -70,7 +70,9 @@ data class HomeUiState(
      */
     val deepSmartPicks: List<SmartFoodPick> = emptyList(),
     /** True when focus gaps exist but the cache is too cold to pick from. */
-    val smartPicksCacheCold: Boolean = false
+    val smartPicksCacheCold: Boolean = false,
+    /** Size of the permanent food-knowledge base (feedback 2026-09-27). */
+    val knowledgeCount: Int = 0
 )
 
 /**
@@ -92,7 +94,18 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     private val _insights = MutableStateFlow<List<Insight>>(emptyList())
     private val _unresolved = MutableStateFlow(0)
 
-    val state: StateFlow<HomeUiState> = _day
+    /** Gap-targeted online research in flight (button state, 2026-09-27). */
+    private val _researching = MutableStateFlow(false)
+    val researching: StateFlow<Boolean> = _researching.asStateFlow()
+
+    /**
+     * Refresh tick (knowledge base, 2026-09-27): bumped after a research
+     * pass adds knowledge so the memoized smart-picks recompute immediately
+     * without waiting for an unrelated ledger emission.
+     */
+    private val _refreshTick = MutableStateFlow(0)
+
+    val state: StateFlow<HomeUiState> = combine(_day, _refreshTick) { d, _ -> d }
         .flatMapLatest { day ->
             graph.nutrients.observeDailyTotals(day)
                 .distinctUntilChanged()
@@ -218,12 +231,40 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                     // scoring fine (bug 2026-09-21).
                     smartPicksCacheCold = focus.isNotEmpty() && smartResult != null &&
                         smartResult.poolSize <
-                            com.example.hoot.domain.insights.SmartFoodProvider.MIN_CANDIDATES
+                            com.example.hoot.domain.insights.SmartFoodProvider.MIN_CANDIDATES,
+                    knowledgeCount = runCatching { graph.foodKnowledge.count() }.getOrDefault(0)
                 )
                 kotlinx.coroutines.flow.flowOf(ui)
             }
         }
         .stateIn(viewModelScope, SharingStarted.Eagerly, HomeUiState(day = todayKey(), loading = true))
+
+    /**
+     * "Find more foods online for these gaps" (feedback 2026-09-27): ONE
+     * gap-targeted LLM discovery pass; findings resolve through the standard
+     * pipeline and land in the permanent knowledge base, from where the
+     * refresh tick rebuilds the recommendation list immediately.
+     */
+    fun researchMoreFoods() {
+        if (_researching.value) return
+        viewModelScope.launch {
+            _researching.value = true
+            try {
+                val focus = state.value.focusNow
+                val known = state.value.allSmartPicks.mapTo(HashSet()) { pick ->
+                    com.example.hoot.domain.nutrition.FoodNormalizer.normalize(pick.displayName)
+                }
+                runCatching {
+                    graph.gapResearcher.researchForGaps(focus, known)
+                }.onFailure {
+                    android.util.Log.e("HootSmartPicks", "gap research failed", it)
+                }
+            } finally {
+                _researching.value = false
+                _refreshTick.value = _refreshTick.value + 1
+            }
+        }
+    }
 
     /** Meals + supplements logged on the selected day (reactive). */
     val meals: StateFlow<List<MealEntity>> = _day

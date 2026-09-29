@@ -96,6 +96,7 @@ fun HomeScreen(
     val supplements by vm.supplements.collectAsStateWithLifecycle()
     val tailEntries by vm.tailEntries.collectAsStateWithLifecycle()
     val unresolved by vm.unresolved.collectAsStateWithLifecycle()
+    val researching by vm.researching.collectAsStateWithLifecycle()
 
     val config by context.appGraph.tailConfig.observeTailConfig()
         .collectAsStateWithLifecycle(initialValue = null)
@@ -129,7 +130,12 @@ fun HomeScreen(
         NutrientDetailSheet(vm = detailVm, onDismiss = { detailNutrientId = null })
     }
     smartPickDetail?.let { pick ->
-        SmartPickDetailSheet(pick = pick, onDismiss = { smartPickDetail = null })
+        SmartPickDetailSheet(
+            pick = pick,
+            onDismiss = { smartPickDetail = null },
+            allPicks = state.allSmartPicks.ifEmpty { state.smartPicks },
+            onOpenPick = { smartPickDetail = it }
+        )
     }
     if (showConsumedDetail) {
         ConsumedDayDetailSheet(
@@ -149,7 +155,10 @@ fun HomeScreen(
             gaps = state.focusNow,
             loading = state.loading,
             onOpenPick = { smartPickDetail = it },
-            onDismiss = { showAllPicks = false }
+            onDismiss = { showAllPicks = false },
+            knowledgeCount = state.knowledgeCount,
+            researching = researching,
+            onResearch = vm::researchMoreFoods
         )
     }
     if (showDatePicker) {

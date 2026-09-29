@@ -6,6 +6,7 @@ import com.example.hoot.data.local.entity.FoodEntity
 import com.example.hoot.data.local.entity.FoodNutrientProfileEntity
 import com.example.hoot.data.local.entity.LookupCacheEntity
 import com.example.hoot.data.local.entity.SourceEntity
+import com.example.hoot.data.repository.FoodKnowledgeRepository
 import com.example.hoot.data.repository.NutrientRepository
 import org.json.JSONArray
 import org.json.JSONObject
@@ -29,7 +30,8 @@ internal fun batchMaxTokens(n: Int): Int = (600 * n + 400).coerceIn(4_000, 8_000
  * tracked-nutrient refs every prompt tier needs.
  */
 internal class ResolutionStore(
-    private val nutrients: NutrientRepository
+    private val nutrients: NutrientRepository,
+    private val knowledge: FoodKnowledgeRepository? = null
 ) {
     /** Tracked-nutrient refs for prompts, straight from the seeded table. */
     suspend fun nutrientRefs(): List<NutritionPrompts.NutrientRef> =
@@ -64,6 +66,11 @@ internal class ResolutionStore(
         // (source-record shaping stays origin-aware below — see `sources` list)
         val food = ensureFood(key, panel.displayName.ifBlank { displayName }, imageTerm = panel.imageSearchTerm)
         val canonicalUnits = unitMap()
+        // Real seeded targets (RDA/AI) make the high-in derivation
+        // nutrient-aware; the per-unit fallback stays for unseeded ids.
+        val targets = nutrients.definitionsAll().associate { def ->
+            def.id to (def.rdaValue ?: defaultTargetFor(def.unit))
+        }
         // Canonicalize LLM-reported amounts to canonical nutrient units. Ids
         // are already alias-folded by [NutritionPrompts.parsePanel]; fold
         // again defensively (web-merge path) and SKIP ids without a seeded
@@ -131,6 +138,33 @@ internal class ResolutionStore(
             )
         }
         nutrients.recordSources(sources)
+        // Permanent food-knowledge base (feedback 2026-09-27): EVERY resolved
+        // food — seed, LLM or web — is remembered forever with its per-100 g
+        // panel and derived high-in index. Never throws past a log line: the
+        // knowledge base is an accumulation side-effect, not a resolution
+        // requirement.
+        val knowledge = knowledge ?: return
+        runCatching {
+            knowledge.record(
+                normalizedName = key,
+                displayName = panel.displayName.ifBlank { displayName },
+                per100 = FoodKnowledgeIndex.valuesFromJson(canonicalValues.toString()),
+                dailyTarget = targets,
+                confidence = panel.confidence,
+                resolutionMethod = method,
+                sourceUrls = sourceUrls
+            )
+        }.onFailure { Log.w(TAG, "knowledge-base record failed for '$key': ${it.message}") }
+    }
+
+    /** Per-unit fallback target for the knowledge base's density ranking. */
+    private fun defaultTargetFor(unit: String): Double = when (unit) {
+        "g" -> 50.0      // protein-ish daily target ballpark for ratio math
+        "mg" -> 300.0
+        "mcg" -> 200.0
+        "kcal" -> 2000.0
+        "L" -> 2.0
+        else -> 100.0
     }
 
     suspend fun ensureFood(

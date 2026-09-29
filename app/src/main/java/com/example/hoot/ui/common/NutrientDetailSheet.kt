@@ -87,7 +87,11 @@ fun NutrientDetailSheet(
                     Text(
                         state.windows.joinToString("  ·  ") { w ->
                             if (!w.hasData) "${w.label}: no data"
-                            else "${w.label}: ${w.pct}% of target"
+                            else if (!w.hasTarget) {
+                                // Target-less nutrients (calories): show the
+                                // average daily amount, not a misleading 0 %.
+                                "${w.label}: ${formatNutrient(w.intake, w.unit)}/day avg"
+                            } else "${w.label}: ${w.pct}% of target"
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant

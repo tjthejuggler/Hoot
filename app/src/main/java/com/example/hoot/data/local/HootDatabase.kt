@@ -8,6 +8,7 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.hoot.data.local.dao.DietaryProfileDao
 import com.example.hoot.data.local.dao.FoodDao
+import com.example.hoot.data.local.dao.FoodKnowledgeDao
 import com.example.hoot.data.local.dao.IngredientDao
 import com.example.hoot.data.local.dao.IntakeDao
 import com.example.hoot.data.local.dao.LookupCacheDao
@@ -23,6 +24,7 @@ import com.example.hoot.data.local.dao.TailConfigDao
 import com.example.hoot.data.local.dao.TailEntryDao
 import com.example.hoot.data.local.entity.DietaryProfileEntity
 import com.example.hoot.data.local.entity.FoodEntity
+import com.example.hoot.data.local.entity.FoodKnowledgeEntity
 import com.example.hoot.data.local.entity.FoodNutrientProfileEntity
 import com.example.hoot.data.local.entity.IngredientEntity
 import com.example.hoot.data.local.entity.LookupCacheEntity
@@ -61,7 +63,8 @@ import kotlinx.coroutines.launch
         NutrientGoalEntity::class,
         RecommendationEntity::class,
         ScoreSnapshotEntity::class,
-        TailEntryEntity::class
+        TailEntryEntity::class,
+        FoodKnowledgeEntity::class
     ],
     // v4: IngredientEntity/SupplementEntity gained `resolveAttempts` (bug fix:
     // permanently-failed items must not re-enqueue on every start). v3 → v4 is
@@ -71,7 +74,10 @@ import kotlinx.coroutines.launch
     // `tail_entries` table holds water/misc Tail log entries. Additive only.
     // v6: meals gained the Tail-compatible capture structure (summary, kcal,
     // macros, vegan flag, health notes, transcript, photo path). Additive.
-    version = 6,
+    // v7: new permanent `food_knowledge` table (feedback 2026-09-27) — the
+    // amassing "what is high in what" database every researched food lands in.
+    // Additive only; no existing data is touched.
+    version = 7,
     exportSchema = false
 )
 abstract class HootDatabase : RoomDatabase() {
@@ -90,6 +96,7 @@ abstract class HootDatabase : RoomDatabase() {
     abstract fun recommendationDao(): RecommendationDao
     abstract fun scoreSnapshotDao(): ScoreSnapshotDao
     abstract fun tailEntryDao(): TailEntryDao
+    abstract fun foodKnowledgeDao(): FoodKnowledgeDao
 
     companion object {
         private const val DB_NAME = "hoot.db"
@@ -114,7 +121,8 @@ abstract class HootDatabase : RoomDatabase() {
                     // (bug fix: failed items must stop re-enqueueing on restart).
                     // v4 → v5 adds water/misc Tail-habit mapping + `tail_entries`.
                     // v5 → v6 adds the Tail-compatible capture columns on meals.
-                    .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+                    // v6 → v7 adds the permanent food_knowledge table.
+                    .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
                     // Debug-only schema: a missed migration rebuilds from the seed.
                     .fallbackToDestructiveMigration(dropAllTables = true)
                     .build()
@@ -154,6 +162,32 @@ abstract class HootDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE meals ADD COLUMN healthNotes TEXT DEFAULT NULL")
                 db.execSQL("ALTER TABLE meals ADD COLUMN transcript TEXT DEFAULT NULL")
                 db.execSQL("ALTER TABLE meals ADD COLUMN photoPath TEXT DEFAULT NULL")
+            }
+        }
+
+        /** v6 → v7: new `food_knowledge` table (permanent knowledge base). */
+        private val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `food_knowledge` (" +
+                        "`id` TEXT NOT NULL, " +
+                        "`normalizedName` TEXT NOT NULL, " +
+                        "`displayName` TEXT NOT NULL, " +
+                        "`valuesJson` TEXT NOT NULL, " +
+                        "`highInJson` TEXT NOT NULL, " +
+                        "`confidence` REAL NOT NULL, " +
+                        "`resolutionMethod` TEXT NOT NULL, " +
+                        "`sourceUrlsJson` TEXT NOT NULL, " +
+                        "`researchedForJson` TEXT NOT NULL, " +
+                        "`firstResearchedAt` INTEGER NOT NULL, " +
+                        "`lastResearchedAt` INTEGER NOT NULL, " +
+                        "`researchCount` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`id`))"
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS " +
+                        "`index_food_knowledge_normalizedName` ON `food_knowledge` (`normalizedName`)"
+                )
             }
         }
 

@@ -18,7 +18,9 @@ data class CoverageWindow(
     val intake: Double,
     val target: Double,
     val daysTracked: Int,
-    val windowDays: Int
+    val windowDays: Int,
+    /** Canonical unit for the target-less rendering ("avg/day", not "0 %"). */
+    val unit: String = ""
 ) {
     /** 0–100 % of target across days WITH data. */
     val pct: Int
@@ -26,6 +28,13 @@ data class CoverageWindow(
 
     /** "no data" marker when the nutrient was never logged in the window. */
     val hasData: Boolean get() = daysTracked > 0
+
+    /**
+     * Target-less nutrients (calories, total_fat — no RDA, no custom goal)
+     * have no meaningful %: render the average daily amount instead of a
+     * misleading "0 % of target" (feedback 2026-09-29).
+     */
+    val hasTarget: Boolean get() = target > 0
 }
 
 /** State of the actionable nutrient detail sheet (overhaul feedback #3). */
@@ -87,7 +96,8 @@ class NutrientDetailViewModel(app: Application) : AndroidViewModel(app) {
                     intake = totals.map { it.total }.takeIf { it.isNotEmpty() }?.average() ?: 0.0,
                     target = target,
                     daysTracked = totals.size,
-                    windowDays = days.toInt()
+                    windowDays = days.toInt(),
+                    unit = def.unit
                 )
             }
             _state.value = NutrientDetailState(
