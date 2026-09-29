@@ -1,8 +1,8 @@
 package com.example.hoot.domain.insights
 
 import android.util.Log
-import com.example.hoot.data.local.entity.FoodEntity
 import com.example.hoot.data.local.entity.FoodNutrientProfileEntity
+import com.example.hoot.domain.nutrition.SeedFoodLibrary
 import com.example.hoot.data.local.entity.RecommendationEntity
 import com.example.hoot.data.remote.LlmClient
 import com.example.hoot.data.remote.LlmConfig
@@ -106,11 +106,11 @@ class RecommendationEngine(
         for (gap in gaps) {
             val seen = recentlySuggested[gap.id].orEmpty()
             val candidates = findCachedSources(gap.id, dietStyle, allergies, dislikes, gap.target)
-                .filter { identityOf(it.food.displayName) !in seen }
+                .filter { identityOf(it.displayName) !in seen }
             cachedFoods += candidates.size
             val take = min(candidates.size, foodsPerNutrient)
             for (cand in candidates.take(take)) {
-                if (issue(gap, day, displayNameOf(cand.food.displayName), reason(gap, cand.per100, cand.perAmount, cand.food), null)) {
+                if (issue(gap, day, displayNameOf(cand.displayName), reason(gap, cand), null)) {
                     issued++
                 }
             }
@@ -200,9 +200,9 @@ class RecommendationEngine(
         val candidates = findCachedSources(nutrientId, dietStyle, allergies, dislikes, target)
         for (cand in candidates) {
             if (issuedNames.size >= count) break
-            val key = identityOf(cand.food.displayName)
+            val key = identityOf(cand.displayName)
             if (key in existing || key in issuedNames) continue
-            if (issue(gap, day, displayNameOf(cand.food.displayName), reason(gap, cand.per100, cand.perAmount, cand.food), null)) {
+            if (issue(gap, day, displayNameOf(cand.displayName), reason(gap, cand), null)) {
                 issuedNames += key
                 cached++
             }
@@ -286,21 +286,22 @@ class RecommendationEngine(
         return true
     }
 
-    private fun reason(gap: Gap, valuePerAmount: Double, perAmount: Double, food: FoodEntity): String {
-        val valuePer100 = if (perAmount > 0) valuePerAmount * (100.0 / perAmount) else valuePerAmount
-        val perPortion = food.typicalServingGrams?.let { g -> valuePer100 * (g / 100.0) } ?: valuePer100
+    private fun reason(gap: Gap, cand: CachedSource): String {
+        val perPortion = cand.per100 * ((cand.servingGrams?.takeIf { it > 0 } ?: 100.0) / 100.0)
         val pctOfTarget = if (gap.target > 0) (perPortion / gap.target * 100.0) else 0.0
         return "%s covers about %d%% of your %s target per portion (you're at %d%% today).".format(
-            food.displayName,
+            cand.displayName,
             min(200, pctOfTarget.toInt().coerceAtLeast(1)),
             gap.name,
             (gap.coverage * 100).toInt()
         )
     }
 
-    /** One quality-gated cached candidate: per-100 g value + serving grams. */
+    /** One quality-gated local candidate: per-100 g value + serving grams. */
     data class CachedSource(
-        val food: FoodEntity,
+        val displayName: String,
+        val category: String?,
+        val servingGrams: Double?,
         /** Profile's native amount (grams) the value refers to. */
         val perAmount: Double,
         /** Nutrient value normalized to per-100 g. */
@@ -327,8 +328,8 @@ class RecommendationEngine(
         target: Double
     ): List<CachedSource> {
         val out = ArrayList<CachedSource>()
-        val foods = nutrients.foodsAll()
-        for (food in foods) {
+        // Room-resolved profiles (LookupCache tier).
+        for (food in nutrients.foodsAll()) {
             if (food.isSupplement) continue
             if (!NutrientSourceQuality.isAcceptableSourceName(food.displayName)) continue
             if (!dietAllows(food.displayName, food.category, dietStyle, allergies, dislikes)) continue
@@ -345,10 +346,30 @@ class RecommendationEngine(
                 target = target
             )
             if (!NutrientSourceQuality.meetsDensityFloor(coverage)) continue
-            out += CachedSource(food, profile.perAmount, per100, coverage)
+            out += CachedSource(food.displayName, food.category, food.typicalServingGrams, profile.perAmount, per100, coverage)
         }
-        // Rank by per-serving coverage of the daily target, best first.
-        return out.sortedByDescending { it.servingCoverage }.take(12)
+        // Bundled seed LUT (SEED tier — offline fix 2026-09-29: the nutrient
+        // detail sheet showed ZERO suggestions on installs whose foods table
+        // had no resolved profiles yet and no LLM was configured; the seed
+        // library is deterministic, network-free, USDA-derived).
+        for (seed in SeedFoodLibrary.foods.values.distinctBy { it.key }) {
+            if (!NutrientSourceQuality.isAcceptableSourceName(seed.displayName)) continue
+            if (!dietAllows(seed.displayName, seed.category, dietStyle, allergies, dislikes)) continue
+            val value = seed.per100[nutrientId] ?: continue
+            if (value <= 0) continue
+            val coverage = NutrientSourceQuality.servingCoverage(
+                per100 = value,
+                servingGrams = seed.typicalServingGrams,
+                target = target
+            )
+            if (!NutrientSourceQuality.meetsDensityFloor(coverage)) continue
+            out += CachedSource(seed.displayName, seed.category, seed.typicalServingGrams, 100.0, value, coverage)
+        }
+        // Dedupe seed-vs-cache identity overlaps ("Salmon" vs "Salmon"),
+        // rank by per-serving coverage of the daily target, best first.
+        return out.distinctBy { identityOf(it.displayName) }
+            .sortedByDescending { it.servingCoverage }
+            .take(12)
     }
 
     /**
