@@ -145,10 +145,17 @@ class NutrientDetailViewModel(app: Application) : AndroidViewModel(app) {
             )
             return
         }
-        // Re-read the day's persisted suggestions for this nutrient (open
-        // first). Diet gate (diet-fix hardening, 2026-09): rows issued before
-        // a diet change (or by a constraint-ignoring LLM) must not surface in
-        // the sheet — filter against the CURRENT merged profile.
+        // Re-read the persisted suggestions for this nutrient. Window read
+        // (starvation fix 2026-10-04): the sheet used to read ONLY today's
+        // rows while generation deduped against 14 days of history — once
+        // every candidate had been suggested recently, generation issued
+        // nothing and today's table stayed empty: the recurring "no foods
+        // showing" bug. Rows from the trailing window (newest first,
+        // deduped by food identity) keep the sheet populated while fresh
+        // generation fills the top. Diet gate (diet-fix hardening, 2026-09):
+        // rows issued before a diet change (or by a constraint-ignoring LLM)
+        // must not surface in the sheet — filter against the CURRENT merged
+        // profile.
         val s = graph.settings.current()
         val roomDiet = runCatching { graph.tailConfig.dietaryProfile() }.getOrNull()
         val dietFilter = com.example.hoot.domain.insights.DietTextFilter.merged(
@@ -163,19 +170,23 @@ class NutrientDetailViewModel(app: Application) : AndroidViewModel(app) {
         // issued by an older run with vague names ("herbs and seasonings")
         // never surface, and the list is ordered by the % of target each
         // food covers (parsed from the standard reason template), best first.
-        val recs = graph.nutrients.recommendationsBetween(day, day)
+        val windowFrom = dayKeyMinusDays(day, 13L)
+        val recs = graph.nutrients.recommendationsBetween(windowFrom, day)
             .filter { it.nutrientId == _state.value.nutrientId }
             .filter {
                 dietFilter.allows(it.foodName) && dietFilter.allows(it.reasonText) &&
                     NutrientSourceQuality.isAcceptableSourceName(it.foodName)
             }
             .sortedWith(
-                compareByDescending<RecommendationEntity> { it.accepted == null }
+                compareByDescending<RecommendationEntity> { it.day }
+                    .thenByDescending { it.accepted == null }
                     .thenByDescending {
                         NutrientSourceQuality.parseCoveragePct(it.reasonText) ?: 0.0
                     }
                     .thenBy { it.foodName }
             )
+            .distinctBy { it.foodName.lowercase().trim() }
+            .take(8)
         _state.value = _state.value.copy(
             suggestions = recs,
             loadingMore = false,

@@ -116,7 +116,7 @@ fun FoodLibraryScreen(
                 onValueChange = viewModel::setSearch,
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
-                placeholder = { Text("Search foods…") },
+                placeholder = { Text("Search foods, nutrients, macros…") },
                 leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
                 trailingIcon = {
                     if (search.isNotEmpty()) {

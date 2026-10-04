@@ -186,10 +186,12 @@ class RecommendationEngine(
         // Same-day rows PLUS the trailing dedup window (repetition fix
         // 2026-09-23): the sheet must not hand back what earlier days
         // already suggested for this nutrient.
-        val existing = nutrients.recommendationsBetween(day, day)
+        val todayKeys = nutrients.recommendationsBetween(day, day)
             .filter { it.nutrientId == nutrientId }
-            .map { it.foodName.lowercase() }
-            .toSet() + (recentlySuggestedByNutrient(day)[nutrientId] ?: emptySet())
+            .map { identityOf(it.foodName) }
+            .toSet()
+        val existing = todayKeys +
+            (recentlySuggestedByNutrient(day)[nutrientId] ?: emptySet())
 
         val issuedNames = LinkedHashSet<String>()
         var cached = 0
@@ -197,13 +199,25 @@ class RecommendationEngine(
 
         // Pass 1 — local resolved profiles rich in the nutrient (quality
         // gates inside: precise names, per-serving ranking, density floor).
+        // SOFT dedupe (starvation fix 2026-10-04): the trailing 14-day window
+        // used to be a HARD wall — after it accumulated every candidate for a
+        // nutrient, the detail sheet issued zero rows forever ("no foods
+        // showing" regression). Fresh candidates are still preferred, but
+        // when they run out the best previously-suggested foods are re-issued
+        // rather than leaving the sheet empty. Only SAME-DAY identities are
+        // hard-skipped so a row can never duplicate itself today.
         val candidates = findCachedSources(nutrientId, dietStyle, allergies, dislikes, target)
-        for (cand in candidates) {
-            if (issuedNames.size >= count) break
+        data class Pick(val key: String, val cand: CachedSource, val fresh: Boolean)
+        val ordered = candidates.mapNotNull { cand ->
             val key = identityOf(cand.displayName)
-            if (key in existing || key in issuedNames) continue
-            if (issue(gap, day, displayNameOf(cand.displayName), reason(gap, cand), null)) {
-                issuedNames += key
+            if (key in todayKeys) return@mapNotNull null
+            Pick(key, cand, key !in existing)
+        }.sortedWith(compareByDescending<Pick> { it.fresh }.thenByDescending { it.cand.servingCoverage })
+        for (pick in ordered) {
+            if (issuedNames.size >= count) break
+            if (pick.key in issuedNames) continue
+            if (issue(gap, day, displayNameOf(pick.cand.displayName), reason(gap, pick.cand), null)) {
+                issuedNames += pick.key
                 cached++
             }
         }
@@ -230,7 +244,7 @@ class RecommendationEngine(
                 for (gen in generated) {
                     if (issuedNames.size >= count) break
                     val key = identityOf(gen.foodName)
-                    if (key in existing || key in issuedNames) continue
+                    if (key in todayKeys || key in issuedNames) continue
                     if (issue(gap, day, displayNameOf(gen.foodName), gen.reason, gen.imageUrl)) {
                         issuedNames += key
                         llmFoods++

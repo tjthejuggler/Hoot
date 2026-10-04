@@ -91,9 +91,13 @@ class FoodLibraryViewModel(app: Application) : AndroidViewModel(app) {
             val profile = byFood[food.id]
             if (mode == FoodLibraryFilter.WITH_DATA && profile == null) return@mapNotNull null
             if (mode == FoodLibraryFilter.WITHOUT_DATA && profile != null) return@mapNotNull null
-            if (q.isNotEmpty() &&
-                !food.displayName.lowercase().contains(q) &&
-                !food.normalizedName.contains(q)
+            if (q.isNotEmpty() && !foodLibraryMatches(
+                    query = q,
+                    displayName = food.displayName,
+                    normalizedName = food.normalizedName,
+                    category = food.category,
+                    valuesJson = profile?.valuesJson
+                )
             ) return@mapNotNull null
             val (count, summary) = summarize(profile, defById)
             FoodLibraryRow(food, profile, count, summary)
@@ -311,6 +315,39 @@ class FoodLibraryViewModel(app: Application) : AndroidViewModel(app) {
         }.sortedWith(compareBy({ it.tier }, { it.lower }))
         return keys.size to entries.take(3).joinToString(" · ") { it.text }
     }
+}
+
+/**
+ * Library search matching across EVERY aspect of a row (2026-10-04): food
+ * name (display + normalized), category, and the nutrient panel — nutrient
+ * keys read as humans type them ("vitamin_b12" ↔ "vitamin b12", "b12",
+ * "magnesium", "protein") and stored values match too ("31" finds the food
+ * whose protein is 31 g). Pure JVM so the behavior is unit-pinned.
+ */
+internal fun foodLibraryMatches(
+    query: String,
+    displayName: String,
+    normalizedName: String,
+    category: String?,
+    valuesJson: String?
+): Boolean {
+    val q = query.trim().lowercase()
+    if (q.isEmpty()) return true
+    if (displayName.lowercase().contains(q)) return true
+    if (normalizedName.contains(q)) return true
+    if (category?.lowercase()?.contains(q) == true) return true
+    val json = valuesJson ?: return false
+    val obj = runCatching { JSONObject(json) }.getOrNull() ?: return false
+    val keys = obj.keys()
+    while (keys.hasNext()) {
+        val raw = keys.next()
+        // "vitamin_b12" → "vitamin b12"; also matches shorthand "b12".
+        if (raw.replace('_', ' ').contains(q)) return true
+        // Exact value match ("12.5").
+        val v = obj.optDouble(raw, Double.NaN)
+        if (!v.isNaN() && fmt(v) == q) return true
+    }
+    return false
 }
 
 /** Shortest stable double rendering ("12", "12.35"). */
