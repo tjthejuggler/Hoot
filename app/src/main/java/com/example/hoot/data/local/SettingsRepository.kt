@@ -97,6 +97,9 @@ data class AppSettings(
     val userAgeYears: Int = 0,
     val userSex: String = "",            // "male" | "female" | ""
 
+    /** SAF tree URI of the TailCue export folder (Syncthing-synced); blank = off. */
+    val tailcueExportDirUri: String = "",
+
     // UI preferences.
     val uiDynamicColors: Boolean = true,
     val uiDarkMode: Boolean = true       // dark-first
@@ -140,6 +143,7 @@ class SettingsRepository(private val context: Context) {
         val UI_DYNAMIC_COLORS = booleanPreferencesKey("ui_dynamic_colors")
         val UI_DARK_MODE = booleanPreferencesKey("ui_dark_mode")
         val PILLS_SPLIT_RESYNC = booleanPreferencesKey("pills_split_resync_done")
+        val TAILCUE_EXPORT_DIR = stringPreferencesKey("tailcue_export_dir_uri")
     }
 
     val settings: Flow<AppSettings> = context.dataStore.data.map { p ->
@@ -171,7 +175,8 @@ class SettingsRepository(private val context: Context) {
             userAgeYears = p[K.USER_AGE_YEARS] ?: 0,
             userSex = p[K.USER_SEX] ?: "",
             uiDynamicColors = p[K.UI_DYNAMIC_COLORS] ?: true,
-            uiDarkMode = p[K.UI_DARK_MODE] ?: true
+            uiDarkMode = p[K.UI_DARK_MODE] ?: true,
+            tailcueExportDirUri = p[K.TAILCUE_EXPORT_DIR] ?: ""
         )
     }
 
@@ -255,6 +260,11 @@ class SettingsRepository(private val context: Context) {
             it[K.USER_AGE_YEARS] = ageYears.coerceIn(0, 120)
             it[K.USER_SEX] = if (sex == "male" || sex == "female") sex else ""
         }
+    }
+
+    /** SAF folder (tree URI string) Hoot mirrors its daily TailCue export into. */
+    suspend fun saveTailcueExportDir(uri: String) {
+        context.dataStore.edit { it[K.TAILCUE_EXPORT_DIR] = uri.trim() }
     }
 
     /** UI preferences (theme mode, dynamic color). */

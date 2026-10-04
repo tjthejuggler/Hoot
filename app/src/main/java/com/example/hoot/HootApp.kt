@@ -14,6 +14,8 @@ class HootApp : Application() {
         // Coroutine-based periodic Tail sync (honors syncEnabled /
         // syncIntervalMinutes DataStore settings; no-ops when unconfigured).
         appGraph.tailSync.startPeriodicSync()
+        // Daily TailCue export (no-ops when no export folder is configured).
+        appGraph.autoExport.runOnStartup()
     }
 }
 

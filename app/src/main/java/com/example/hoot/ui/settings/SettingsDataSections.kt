@@ -25,6 +25,57 @@ import androidx.compose.ui.unit.dp
 import com.example.hoot.data.local.AppSettings
 import com.example.hoot.domain.nutrition.NutritionProcessState
 
+// ── TailCue export section ───────────────────────────────────────────────────
+
+/**
+ * Daily TailCue export: pick the Syncthing-synced folder (the same habitsdb
+ * folder Tail's backups land in). Hoot then writes one
+ * `hoot_auto_export_YYYY-MM-DD.json` per day there; TailCue on the PC
+ * ingests it alongside Tail's and Wags' backups.
+ */
+@Composable
+internal fun TailCueExportSection(
+    settings: AppSettings,
+    onDirPicked: (uriString: String?) -> Unit
+) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val picker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) {
+            // Keep write access across reboots so daily exports keep working.
+            runCatching {
+                ctx.contentResolver.takePersistableUriPermission(
+                    uri,
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                        android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                )
+            }
+            onDirPicked(uri.toString())
+        }
+    }
+    SectionCard(
+        title = "TailCue export",
+        subtitle = "daily nutrition export for the TailCue analysis webapp"
+    ) {
+        Text(
+            if (settings.tailcueExportDirUri.isBlank())
+                "No export folder set — Hoot's data stays out of TailCue."
+            else
+                "Exporting daily to the picked folder (same folder Tail's backups sync through).",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Button(onClick = { picker.launch(null) }) { Text("Choose folder") }
+            if (settings.tailcueExportDirUri.isNotBlank()) {
+                OutlinedButton(onClick = { onDirPicked(null) }) { Text("Stop exporting") }
+            }
+        }
+    }
+}
+
 // ── Sync preferences section ─────────────────────────────────────────────────
 
 /** Background-sync cadence + cache TTL, saved on button (DataStore keys). */

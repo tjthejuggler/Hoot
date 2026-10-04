@@ -186,6 +186,14 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** TailCue export folder (SAF tree URI); null clears it. */
+    fun saveTailcueExportDir(uri: String?) {
+        viewModelScope.launch {
+            graph.settings.saveTailcueExportDir(uri ?: "")
+            if (uri != null) runCatching { graph.autoExport.exportIfNeeded() }
+        }
+    }
+
     // ---- Dietary profile + user stats ---------------------------------------
 
     /**

@@ -155,6 +155,12 @@ fun SettingsScreen(
                 onSave = viewModel::saveSync
             )
 
+            // ── TailCue export ─────────────────────────────────────────────
+            TailCueExportSection(
+                settings = settings,
+                onDirPicked = viewModel::saveTailcueExportDir
+            )
+
             // ── Data & cache ──────────────────────────────────────────────
             DataCacheSection(
                 cacheCount = cacheCount,

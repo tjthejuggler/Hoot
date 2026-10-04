@@ -50,6 +50,11 @@ class AppGraph(context: Context) {
     /** Room database — builds once per process; seeds nutrients on first create. */
     val database: HootDatabase = HootDatabase.build(appContext, appScope)
 
+    /** Daily TailCue export into the Syncthing-synced folder (opt-in in Settings). */
+    val autoExport = com.example.hoot.data.backup.AutoExportManager(
+        appContext, settings, database, appScope
+    )
+
     init {
         // Echo-registry warm-up BEFORE any sync/pull can run: the filter set
         // is what keeps Hoot's own pushed rows from re-ingesting as echoes.
