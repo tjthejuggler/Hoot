@@ -51,8 +51,6 @@ import com.example.hoot.data.local.entity.RecommendationEntity
 import com.example.hoot.ui.charts.BarChart
 import com.example.hoot.ui.charts.LineChart
 import com.example.hoot.ui.charts.RadarChart
-import com.example.hoot.ui.common.NutrientDetailSheet
-import com.example.hoot.ui.common.NutrientDetailViewModel
 import com.example.hoot.ui.common.SectionHeader
 import com.example.hoot.ui.common.TierChip
 import com.example.hoot.ui.common.foodEmoji
@@ -67,20 +65,14 @@ import com.example.hoot.ui.common.prettyDay
 @Composable
 fun InsightsScreen(
     onOpenHistory: () -> Unit,
-    vm: InsightsViewModel = viewModel(),
-    detailVm: NutrientDetailViewModel = viewModel()
+    onOpenNutrient: (String) -> Unit,
+    vm: InsightsViewModel = viewModel()
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
-    var detailNutrientId by remember { mutableStateOf<String?>(null) }
 
     // One coach-note attempt per window change (LLM configured → live note,
     // otherwise the deterministic template — never an error surfaced).
     LaunchedEffect(state.window) { vm.refreshCoachNote() }
-
-    detailNutrientId?.let { id ->
-        detailVm.open(id)
-        NutrientDetailSheet(vm = detailVm, onDismiss = { detailNutrientId = null })
-    }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -252,13 +244,13 @@ fun InsightsScreen(
                         )
                     }
                     visibleGrades.forEach { row ->
-                        GradeRow(row, onClick = { detailNutrientId = row.nutrientId })
+                        GradeRow(row, onClick = { onOpenNutrient(row.nutrientId) })
                     }
                     // The A list: hidden by default, viewable on demand — the
                     // "what I'm doing well at" section.
                     if (aGrades.isNotEmpty() && showASection) {
                         aGrades.forEach { row ->
-                            GradeRow(row, onClick = { detailNutrientId = row.nutrientId })
+                            GradeRow(row, onClick = { onOpenNutrient(row.nutrientId) })
                         }
                     }
                     if (aGrades.isNotEmpty()) {

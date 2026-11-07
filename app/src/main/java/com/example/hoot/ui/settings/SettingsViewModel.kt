@@ -194,6 +194,14 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Tail Bridge toggle: enable/disable the zero-config TailCue export push. */
+    fun setTailcueBridge(enabled: Boolean) {
+        viewModelScope.launch {
+            graph.settings.setTailcueBridge(enabled)
+            if (enabled) runCatching { graph.autoExport.exportIfNeeded() }
+        }
+    }
+
     // ---- Dietary profile + user stats ---------------------------------------
 
     /**

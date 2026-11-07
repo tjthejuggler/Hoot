@@ -45,7 +45,10 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.hoot.data.local.entity.NutrientDefinitionEntity
+import com.example.hoot.ui.charts.ChartTimeNavRow
 import com.example.hoot.ui.charts.LineChart
+import com.example.hoot.ui.charts.chartPan
+import com.example.hoot.ui.charts.shortRangeLabel
 import com.example.hoot.ui.common.formatNutrient
 import com.example.hoot.ui.common.foodEmoji
 import com.example.hoot.ui.common.shortDayLabel
@@ -142,20 +145,42 @@ private fun NutrientTab(
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp)) {
                         Text("Intake vs target", style = MaterialTheme.typography.titleSmall)
-                        Spacer(Modifier.height(8.dp))
-                        LineChart(
-                            points = state.series.map { it.intake },
-                            modifier = Modifier
+                        if (state.series.isNotEmpty()) {
+                            ChartTimeNavRow(
+                                label = shortRangeLabel(
+                                    state.series.first().day,
+                                    state.series.last().day
+                                ),
+                                canGoBack = state.window.days != null &&
+                                    state.endOffset < state.maxOffset,
+                                canGoForward = state.endOffset > 0,
+                                onBack = historyVm::panBack,
+                                onForward = historyVm::panForward
+                            )
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        Box(
+                            Modifier
                                 .fillMaxWidth()
-                                .height(180.dp),
-                            lineColor = MaterialTheme.colorScheme.primary,
-                            referenceLine = target.takeIf { it > 0 },
-                            referenceLabel = "target ${formatNutrient(target, def.unit)}",
-                            referenceColor = MaterialTheme.colorScheme.tertiary,
-                            axisLabels = true,
-                            xLabels = state.series.map { shortDayLabel(it.day) },
-                            contentDescriptionText = "${def.name} intake history"
-                        )
+                                .chartPan(
+                                    enabled = state.window.days != null &&
+                                        (state.endOffset < state.maxOffset || state.endOffset > 0)
+                                ) { older -> if (older) historyVm.panBack() else historyVm.panForward() }
+                        ) {
+                            LineChart(
+                                points = state.series.map { it.intake },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(180.dp),
+                                lineColor = MaterialTheme.colorScheme.primary,
+                                referenceLine = target.takeIf { it > 0 },
+                                referenceLabel = "target ${formatNutrient(target, def.unit)}",
+                                referenceColor = MaterialTheme.colorScheme.tertiary,
+                                axisLabels = true,
+                                xLabels = state.series.map { shortDayLabel(it.day) },
+                                contentDescriptionText = "${def.name} intake history"
+                            )
+                        }
                         Spacer(Modifier.height(8.dp))
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(

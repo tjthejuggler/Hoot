@@ -29,6 +29,14 @@ class IntakeRepository(
     ): List<com.example.hoot.data.local.dao.MealContribution> =
         intakeDao.mealContributions(nutrientId, from, to)
 
+    /** Per-supplement contribution ranking for one nutrient over a window (nutrient page). */
+    suspend fun supplementContributions(
+        nutrientId: String,
+        from: String,
+        to: String
+    ): List<com.example.hoot.data.local.dao.SupplementContribution> =
+        intakeDao.supplementContributions(nutrientId, from, to)
+
     suspend fun rangeTotals(from: String, to: String): List<NutrientDayTotal> =
         intakeDao.rangeTotals(from, to)
 

@@ -100,6 +100,14 @@ data class AppSettings(
     /** SAF tree URI of the TailCue export folder (Syncthing-synced); blank = off. */
     val tailcueExportDirUri: String = "",
 
+    /**
+     * Zero-config TailCue export via the Tail Bridge: Hoot reads the bridge
+     * URL/token from Tail's companion provider and pushes the daily export
+     * to the PC bridge, which files it where TailCue ingests it. No folder
+     * selection involved.
+     */
+    val tailcueBridgeEnabled: Boolean = true,
+
     // UI preferences.
     val uiDynamicColors: Boolean = true,
     val uiDarkMode: Boolean = true       // dark-first
@@ -144,6 +152,7 @@ class SettingsRepository(private val context: Context) {
         val UI_DARK_MODE = booleanPreferencesKey("ui_dark_mode")
         val PILLS_SPLIT_RESYNC = booleanPreferencesKey("pills_split_resync_done")
         val TAILCUE_EXPORT_DIR = stringPreferencesKey("tailcue_export_dir_uri")
+        val TAILCUE_BRIDGE = booleanPreferencesKey("tailcue_bridge_enabled")
     }
 
     val settings: Flow<AppSettings> = context.dataStore.data.map { p ->
@@ -176,7 +185,8 @@ class SettingsRepository(private val context: Context) {
             userSex = p[K.USER_SEX] ?: "",
             uiDynamicColors = p[K.UI_DYNAMIC_COLORS] ?: true,
             uiDarkMode = p[K.UI_DARK_MODE] ?: true,
-            tailcueExportDirUri = p[K.TAILCUE_EXPORT_DIR] ?: ""
+            tailcueExportDirUri = p[K.TAILCUE_EXPORT_DIR] ?: "",
+            tailcueBridgeEnabled = p[K.TAILCUE_BRIDGE] ?: true
         )
     }
 
@@ -265,6 +275,11 @@ class SettingsRepository(private val context: Context) {
     /** SAF folder (tree URI string) Hoot mirrors its daily TailCue export into. */
     suspend fun saveTailcueExportDir(uri: String) {
         context.dataStore.edit { it[K.TAILCUE_EXPORT_DIR] = uri.trim() }
+    }
+
+    /** Tail Bridge relay toggle for the TailCue export (no folder involved). */
+    suspend fun setTailcueBridge(enabled: Boolean) {
+        context.dataStore.edit { it[K.TAILCUE_BRIDGE] = enabled }
     }
 
     /** UI preferences (theme mode, dynamic color). */

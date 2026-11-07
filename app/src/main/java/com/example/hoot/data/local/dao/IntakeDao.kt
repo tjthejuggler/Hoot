@@ -77,6 +77,18 @@ interface IntakeDao {
     )
     suspend fun mealContributions(nutrientId: String, from: String, to: String): List<MealContribution>
 
+    /** Per-supplement contribution rows for one nutrient over a window (nutrient page). */
+    @Query(
+        "SELECT sourceSupplementId AS supplementId, SUM(amount) AS total FROM nutrient_intake_log " +
+            "WHERE nutrientId = :nutrientId AND day BETWEEN :from AND :to " +
+            "AND sourceSupplementId IS NOT NULL GROUP BY sourceSupplementId ORDER BY total DESC"
+    )
+    suspend fun supplementContributions(
+        nutrientId: String,
+        from: String,
+        to: String
+    ): List<SupplementContribution>
+
     /** Idempotent per-day recompute: clears a day's ledger before re-aggregation. */
     @Query("DELETE FROM nutrient_intake_log WHERE day = :day")
     suspend fun deleteForDay(day: String)
@@ -95,6 +107,9 @@ data class NutrientDayTotal(
 
 /** Projection row: one meal's cumulative contribution to a nutrient. */
 data class MealContribution(val mealId: String, val total: Double)
+
+/** Projection row: one supplement's cumulative contribution to a nutrient. */
+data class SupplementContribution(val supplementId: String, val total: Double)
 
 /** DAO for [TailAppConfigEntity] — singleton Tail-integration config. */
 @Dao

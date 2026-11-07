@@ -9,6 +9,7 @@ import com.example.hoot.data.local.entity.NutrientDefinitionEntity
 import com.example.hoot.data.local.entity.NutrientGoalEntity
 import com.example.hoot.ui.common.dayKeyMinusDays
 import com.example.hoot.ui.common.todayKey
+import com.example.hoot.ui.common.windowDays
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -49,7 +50,11 @@ data class HistoryUiState(
     val series: List<DayPoint> = emptyList(),
     val stats: NutrientStats? = null,
     val contributors: List<FoodContributor> = emptyList(),
-    val loading: Boolean = true
+    val loading: Boolean = true,
+    /** Days the visible window ends before today (0 = anchored at today). */
+    val endOffset: Long = 0,
+    /** Max valid endOffset (pan clamp; 0 for the All window). */
+    val maxOffset: Long = 0
 )
 
 /**
@@ -69,6 +74,22 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
     private val _stats = MutableStateFlow<NutrientStats?>(null)
     private val _contributors = MutableStateFlow<List<FoodContributor>>(emptyList())
 
+    /** Chart pan state: window end offset (days before today) + its clamp. */
+    private val _offset = MutableStateFlow(0L)
+    private val _maxOffset = MutableStateFlow(0L)
+
+    /** selection + window + pan bundled to stay inside the typed combine limit. */
+    private data class SelWin(
+        val sel: NutrientDefinitionEntity?,
+        val win: HistoryWindow,
+        val offset: Long,
+        val maxOffset: Long
+    )
+
+    private val selWin = combine(_selected, _window, _offset, _maxOffset) { s, w, o, m ->
+        SelWin(s, w, o, m)
+    }
+
     val window: StateFlow<HistoryWindow> = _window.asStateFlow()
     val search: StateFlow<String> = _search.asStateFlow()
 
@@ -84,22 +105,23 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
     val state: StateFlow<HistoryUiState> = combine(
         graph.nutrients.observeDefinitions(),
         graph.nutrients.observeGoals(),
-        _selected,
-        _window,
+        selWin,
         _search
-    ) { defs, goals, sel, win, q ->
+    ) { defs, goals, sw, q ->
         HistoryUiState(
             definitions = if (q.isBlank()) defs else defs.filter {
                 it.name.contains(q, ignoreCase = true) || it.id.contains(q, ignoreCase = true)
             },
             goals = goals.associateBy { it.nutrientId },
-            selected = sel ?: defs.firstOrNull(),
-            window = win,
+            selected = sw.sel ?: defs.firstOrNull(),
+            window = sw.win,
             search = q,
             series = _series.value,
             stats = _stats.value,
             contributors = _contributors.value,
-            loading = false
+            loading = false,
+            endOffset = sw.offset,
+            maxOffset = sw.maxOffset
         )
     }.stateIn(
         viewModelScope, SharingStarted.Eagerly,
@@ -107,17 +129,16 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
     )
 
     init {
-        // Reload the detail data whenever selection or window changes.
+        // Reload the detail data whenever selection, window or pan offset changes.
         viewModelScope.launch {
-            combine(_selected, _window) { sel, win -> sel to win }
-                .collect { (sel, win) ->
-                    if (sel == null) {
-                        val first = graph.nutrients.definitionsAll().firstOrNull()
-                        if (first != null) _selected.value = first
-                        return@collect
-                    }
-                    loadDetail(sel, win)
+            selWin.collect { sw ->
+                if (sw.sel == null) {
+                    val first = graph.nutrients.definitionsAll().firstOrNull()
+                    if (first != null) _selected.value = first
+                    return@collect
                 }
+                loadDetail(sw.sel, sw.win, sw.offset)
+            }
         }
     }
 
@@ -126,30 +147,52 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun setWindow(win: HistoryWindow) {
+        _offset.value = 0L
         _window.value = win
+    }
+
+    /** Pans the fixed-length window BACK in time by half its length. */
+    fun panBack() {
+        val w = _window.value
+        if (w.days == null) return
+        val step = (w.days / 2).coerceAtLeast(1L)
+        _offset.value = (_offset.value + step).coerceAtMost(_maxOffset.value)
+    }
+
+    /** Pans the window FORWARD toward today by half its length. */
+    fun panForward() {
+        val w = _window.value
+        if (w.days == null) return
+        val step = (w.days / 2).coerceAtLeast(1L)
+        _offset.value = (_offset.value - step).coerceAtLeast(0L)
     }
 
     fun setSearch(q: String) {
         _search.value = q
     }
 
-    private suspend fun loadDetail(def: NutrientDefinitionEntity, win: HistoryWindow) {
+    private suspend fun loadDetail(def: NutrientDefinitionEntity, win: HistoryWindow, offsetIn: Long = 0L) {
         val goal = graph.nutrients.goal(def.id)
         val target = com.example.hoot.ui.common.effectiveTarget(def, goal?.targetValue)
-        val to = today
 
-        // Reactive series would fight the manual loader; this is a snapshot read.
-        val perDay = graph.nutrients.dailyTotalsForWindow(
-            win.days?.let { dayKeyMinusDays(to, it - 1) } ?: "1970-01-01", to
-        )
+        // Full-history snapshot read: drives the series, the earliest-data-day
+        // ("All" span) and the pan clamp in one query.
+        val perDay = graph.nutrients.dailyTotalsForWindow("1970-01-01", today)
         val byDay = perDay.filter { it.nutrientId == def.id }
             .associate { (it.day ?: "") to it.total }
+        val earliest = byDay.keys.filter { it.isNotBlank() }.minOrNull()
+        val span = earliest?.let { windowDays(it, today) } ?: 0L
+        val maxOffset = win.days?.let { (span - it).coerceAtLeast(0L) } ?: 0L
+        val offset = win.days?.let { offsetIn.coerceIn(0L, maxOffset) } ?: 0L
+        val to = dayKeyMinusDays(today, offset)
 
-        // Zero-fill every calendar day of the window (bug fix: previously only
-        // days WITH logged intake became points, so 30d rendered as few points
-        // as 7d whenever few days had data, and the x-axis lost all meaning).
+        // Zero-fill every calendar day of the visible window (bug fix: only
+        // days WITH logged intake used to become points, so 30d rendered as
+        // few points as 7d whenever few days had data).
         val from = win.days?.let { dayKeyMinusDays(to, it - 1) }
-            ?: byDay.keys.filter { it.isNotBlank() }.minOrNull() // "All" → since first data
+            ?: earliest // "All" → since first data; pan disabled
+        _maxOffset.value = maxOffset
+        if (_offset.value != offset) _offset.value = offset
         val series: List<DayPoint> = if (from == null) {
             emptyList()
         } else {

@@ -49,6 +49,22 @@ class AutoExportManager(
         private val ISO = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
     }
 
+
+    /** Keeps pushing fresh exports while the app process lives (every 6h),
+     *  so long-running sessions don't stall at a startup-only snapshot. */
+    fun startPeriodicExport() {
+        scope.launch {
+            while (true) {
+                kotlinx.coroutines.delay(java.util.concurrent.TimeUnit.HOURS.toMillis(6))
+                try {
+                    exportIfNeeded()
+                } catch (t: Throwable) {
+                    Log.w(TAG, "Periodic export failed: ${t.message}", t)
+                }
+            }
+        }
+    }
+
     /** Safe startup hook — returns immediately, does all work on IO. */
     fun runOnStartup() {
         scope.launch {
@@ -61,7 +77,23 @@ class AutoExportManager(
     }
 
     suspend fun exportIfNeeded(): Boolean = withContext(Dispatchers.IO) {
-        val dirUri = settings.current().tailcueExportDirUri
+        val appSettings = settings.current()
+
+        // 1) Zero-config Tail Bridge relay (preferred): push straight to the
+        //    PC bridge, which files the export where TailCue ingests it.
+        if (appSettings.tailcueBridgeEnabled) {
+            val config = com.example.hoot.data.tail.TailBridgeRelay
+                .fetchBridgeConfig(context, appSettings.tailPackage)
+            if (config == null) {
+                Log.w(TAG, "Tail Bridge toggle on but no bridge config from Tail — skipping")
+                return@withContext false
+            }
+            return@withContext com.example.hoot.data.tail.TailBridgeRelay
+                .pushExport(config, buildJson().toString())
+        }
+
+        // 2) Legacy SAF-folder export (kept for continuity; off when unset).
+        val dirUri = appSettings.tailcueExportDirUri
         if (dirUri.isBlank()) return@withContext false
 
         val json = buildJson()

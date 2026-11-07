@@ -36,42 +36,34 @@ import com.example.hoot.domain.nutrition.NutritionProcessState
 @Composable
 internal fun TailCueExportSection(
     settings: AppSettings,
-    onDirPicked: (uriString: String?) -> Unit
+    onBridgeToggle: (enabled: Boolean) -> Unit
 ) {
-    val ctx = androidx.compose.ui.platform.LocalContext.current
-    val picker = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree()
-    ) { uri ->
-        if (uri != null) {
-            // Keep write access across reboots so daily exports keep working.
-            runCatching {
-                ctx.contentResolver.takePersistableUriPermission(
-                    uri,
-                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                        android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                )
-            }
-            onDirPicked(uri.toString())
-        }
-    }
     SectionCard(
         title = "TailCue export",
         subtitle = "daily nutrition export for the TailCue analysis webapp"
     ) {
         Text(
-            if (settings.tailcueExportDirUri.isBlank())
-                "No export folder set — Hoot's data stays out of TailCue."
+            if (settings.tailcueBridgeEnabled)
+                "Connected through the Tail Bridge — Hoot pushes its daily export " +
+                    "to your PC automatically. Nothing else to configure."
             else
-                "Exporting daily to the picked folder (same folder Tail's backups sync through).",
+                "Off — Hoot's data stays out of TailCue. Turn on to export via the Tail Bridge.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(Modifier.height(8.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Button(onClick = { picker.launch(null) }) { Text("Choose folder") }
-            if (settings.tailcueExportDirUri.isNotBlank()) {
-                OutlinedButton(onClick = { onDirPicked(null) }) { Text("Stop exporting") }
-            }
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Switch(
+                checked = settings.tailcueBridgeEnabled,
+                onCheckedChange = onBridgeToggle
+            )
+            Text(
+                if (settings.tailcueBridgeEnabled) "Connected" else "Connect to TailCue",
+                style = MaterialTheme.typography.bodyMedium
+            )
         }
     }
 }

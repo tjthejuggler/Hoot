@@ -16,6 +16,7 @@ class HootApp : Application() {
         appGraph.tailSync.startPeriodicSync()
         // Daily TailCue export (no-ops when no export folder is configured).
         appGraph.autoExport.runOnStartup()
+        appGraph.autoExport.startPeriodicExport()
     }
 }
 

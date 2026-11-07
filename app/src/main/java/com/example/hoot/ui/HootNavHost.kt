@@ -37,7 +37,9 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import android.content.Context
+import androidx.navigation.NavType
 import androidx.navigation.NavHostController
+import androidx.navigation.navArgument
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
@@ -49,6 +51,7 @@ import com.example.hoot.ui.input.AddMealScreen
 import com.example.hoot.ui.input.AddSupplementScreen
 import com.example.hoot.ui.insights.InsightsScreen
 import com.example.hoot.ui.intake.IntakeScreen
+import com.example.hoot.ui.nutrient.NutrientDetailScreen
 import com.example.hoot.ui.library.FoodLibraryScreen
 import com.example.hoot.ui.settings.SettingsScreen
 import com.example.hoot.ui.tail.TailSetupScreen
@@ -71,6 +74,7 @@ const val ROUTE_TODAY_ALIAS = "Today"
 
 /** Detail/setup routes below the tab bar. */
 const val ROUTE_TAIL_SETUP = "tail_setup"
+const val ROUTE_NUTRIENT_DETAIL = "nutrient_detail/{nutrientId}"
 const val ROUTE_ADD_MEAL = "add_meal"
 const val ROUTE_ADD_SUPPLEMENT = "add_supplement"
 const val ROUTE_FOOD_LIBRARY = "food_library"
@@ -175,7 +179,19 @@ fun HootNavHost(navController: NavHostController = rememberNavController()) {
             composable(HootRoute.HISTORY.name) { HistoryScreen() }
             composable(HootRoute.INSIGHTS.name) {
                 InsightsScreen(
-                    onOpenHistory = { navController.navigate(HootRoute.HISTORY.name) { launchSingleTop = true } }
+                    onOpenHistory = { navController.navigate(HootRoute.HISTORY.name) { launchSingleTop = true } },
+                    onOpenNutrient = { id ->
+                        navController.navigate("nutrient_detail/$id") { launchSingleTop = true }
+                    }
+                )
+            }
+            composable(
+                ROUTE_NUTRIENT_DETAIL,
+                arguments = listOf(navArgument("nutrientId") { type = NavType.StringType })
+            ) { entry ->
+                NutrientDetailScreen(
+                    nutrientId = entry.arguments?.getString("nutrientId").orEmpty(),
+                    onBack = { navController.popBackStack() }
                 )
             }
             composable(HootRoute.SETTINGS.name) {

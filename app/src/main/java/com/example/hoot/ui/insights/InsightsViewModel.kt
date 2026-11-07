@@ -29,9 +29,9 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
-/** Time windows for the Insights screen. */
+/** Time windows for the Insights screen. ALL spans the entire logged history. */
 enum class InsightsWindow(val label: String, val days: Int) {
-    D7("7d", 7), D30("30d", 30), D90("90d", 90)
+    D7("7d", 7), D30("30d", 30), D90("90d", 90), D365("1y", 365), ALL("All", 0)
 }
 
 /** Weekly aggregate bar for the score trend chart. */
@@ -130,8 +130,17 @@ class InsightsViewModel(app: Application) : AndroidViewModel(app) {
         roomDiet: com.example.hoot.data.local.entity.DietaryProfileEntity?,
         settings: com.example.hoot.data.local.AppSettings
     ): InsightsUiState {
-        val from = dayKeyMinusDays(today, win.days - 1L)
-        val prevFrom = dayKeyMinusDays(from, win.days.toLong())
+        // ALL → since the first logged data (score snapshot or ledger row).
+        val from = if (win.days > 0) dayKeyMinusDays(today, win.days - 1L) else {
+            val ledgerFirst = runCatching {
+                graph.nutrients.dailyTotalsForWindow("2000-01-01", today)
+                    .mapNotNull { it.day?.takeIf { d -> d.isNotBlank() } }
+                    .minOrNull()
+            }.getOrNull()
+            listOfNotNull(history.minOfOrNull { it.day }, ledgerFirst).minOrNull()
+                ?: dayKeyMinusDays(today, 364L)
+        }
+        val prevFrom = if (win.days > 0) dayKeyMinusDays(from, win.days.toLong()) else from
 
         val current = history.filter { it.day >= from }
         val previous = history.filter { it.day >= prevFrom && it.day < from }

@@ -158,7 +158,7 @@ fun SettingsScreen(
             // ── TailCue export ─────────────────────────────────────────────
             TailCueExportSection(
                 settings = settings,
-                onDirPicked = viewModel::saveTailcueExportDir
+                onBridgeToggle = viewModel::setTailcueBridge
             )
 
             // ── Data & cache ──────────────────────────────────────────────
