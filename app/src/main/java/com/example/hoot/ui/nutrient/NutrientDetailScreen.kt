@@ -501,8 +501,8 @@ fun NutrientDetailScreen(
                         Spacer(Modifier.height(10.dp))
                         var scopeMenu by remember { mutableStateOf(false) }
                         val scopeLabel = when (state.researchScope) {
-                            NutrientResearcher.Scope.SYMPTOMS_AND_FOODS -> "Deficiencies + foods"
-                            NutrientResearcher.Scope.SYMPTOMS -> "Deficiencies only"
+                            NutrientResearcher.Scope.SYMPTOMS_AND_FOODS -> "Symptoms + foods"
+                            NutrientResearcher.Scope.SYMPTOMS -> "Symptoms only"
                             NutrientResearcher.Scope.FOODS -> "Foods only"
                         }
                         Box {
@@ -511,14 +511,14 @@ fun NutrientDetailScreen(
                             }
                             DropdownMenu(expanded = scopeMenu, onDismissRequest = { scopeMenu = false }) {
                                 DropdownMenuItem(
-                                    text = { Text("Deficiencies + foods (default)") },
+                                    text = { Text("Symptoms + foods") },
                                     onClick = {
                                         vm.setResearchScope(NutrientResearcher.Scope.SYMPTOMS_AND_FOODS)
                                         scopeMenu = false
                                     }
                                 )
                                 DropdownMenuItem(
-                                    text = { Text("Deficiencies only") },
+                                    text = { Text("Symptoms only") },
                                     onClick = {
                                         vm.setResearchScope(NutrientResearcher.Scope.SYMPTOMS)
                                         scopeMenu = false
@@ -574,7 +574,7 @@ fun NutrientDetailScreen(
                                 }
                             }
                             if (result.newDeficiencySymptoms.isNotEmpty()) {
-                                Text("Deficiency symptoms", style = MaterialTheme.typography.titleSmall)
+                                Text("Too-little symptoms", style = MaterialTheme.typography.titleSmall)
                                 result.newDeficiencySymptoms.forEach {
                                     Text("• $it", style = MaterialTheme.typography.bodyMedium)
                                 }
