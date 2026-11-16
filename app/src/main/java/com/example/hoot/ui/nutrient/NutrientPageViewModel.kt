@@ -4,12 +4,14 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.hoot.appGraph
+import com.example.hoot.data.local.SymptomSeed
 import com.example.hoot.data.local.entity.NutrientDefinitionEntity
 import com.example.hoot.data.local.entity.RecommendationEntity
 import com.example.hoot.domain.insights.DietAwareSources
 import com.example.hoot.domain.insights.DietTextFilter
 import com.example.hoot.domain.insights.NutrientGradeRow
 import com.example.hoot.domain.insights.NutrientGrades
+import com.example.hoot.domain.insights.NutrientResearcher
 import com.example.hoot.domain.insights.NutrientSourceQuality
 import com.example.hoot.domain.nutrition.FoodKnowledgeIndex
 import com.example.hoot.ui.common.CoverageWindow
@@ -104,10 +106,30 @@ data class NutrientPageState(
     val llmUnavailable: Boolean = false,
     val error: String? = null,
     /** Day-node popup content (null = closed). */
-    val dayDetail: DayDetail? = null
+    val dayDetail: DayDetail? = null,
+    /** Curated + researched deficiency symptoms (deficiency system). */
+    val deficiencySymptoms: List<SymptomRow> = emptyList(),
+    /** Curated + researched excess ("too much") symptoms. */
+    val excessSymptoms: List<SymptomRow> = emptyList(),
+    /** Research pass running / outcome message. */
+    val researching: Boolean = false,
+    val researchMessage: String? = null,
+    /** Scope dropdown selection (guides the research agent). */
+    val researchScope: NutrientResearcher.Scope = NutrientResearcher.Scope.SYMPTOMS_AND_FOODS,
+    /** Structured result of the last pass (drives the "just added" popup). */
+    val lastResearch: NutrientResearcher.Outcome? = null
 ) {
     val hasTarget: Boolean get() = target > 0
 }
+
+/** One symptom chip row on the nutrient page. */
+data class SymptomRow(
+    val key: String,
+    val display: String,
+    val confidence: Double,
+    /** true when the research agent added this row. */
+    val researched: Boolean
+)
 
 /**
  * Drives the full-screen nutrient detail page ([NutrientDetailScreen]):
@@ -163,8 +185,63 @@ class NutrientPageViewModel(app: Application) : AndroidViewModel(app) {
             )
             loadSeries()
             loadSourcesAndIdeas(filter)
+            loadSymptoms()
             generateMore(initial = true)
         }
+    }
+
+    /** One LLM research pass for this nutrient: new symptoms + new foods. */
+    fun researchNutrient(scope: NutrientResearcher.Scope = _state.value.researchScope) {
+        if (_state.value.researching) return
+        _state.value = _state.value.copy(researching = true, researchMessage = null)
+        viewModelScope.launch {
+            val outcome = runCatching {
+                graph.nutrientResearcher.research(_state.value.nutrientId, scope)
+            }.getOrElse { NutrientResearcher.Outcome(message = "Research failed — try again.") }
+            _state.value = _state.value.copy(
+                researching = false,
+                lastResearch = outcome,
+                researchMessage = when {
+                    outcome.llmUnavailable ->
+                        "Connect an LLM in Settings to run research."
+                    outcome.message != null -> outcome.message
+                    outcome.isEmpty -> "Nothing new found — Hoot may already know it all."
+                    else -> null      // the popup shows the details instead
+                }
+            )
+            // Broadcast the fresh facts (Home re-ranks symptoms + picks).
+            if (!outcome.isEmpty || outcome.message == null) {
+                runCatching {
+                    graph.researchEvents.emit(_state.value.nutrientId)
+                }
+            }
+            loadSymptoms()
+            loadSourcesAndIdeas(mergedDietFilter())
+        }
+    }
+
+    /** User-selected research scope (dropdown on the nutrient page). */
+    fun setResearchScope(scope: NutrientResearcher.Scope) {
+        _state.value = _state.value.copy(researchScope = scope)
+    }
+
+    /** Close the "just added" popup. */
+    fun dismissResearchResult() {
+        _state.value = _state.value.copy(lastResearch = null)
+    }
+
+    private suspend fun loadSymptoms() {
+        val s = _state.value
+        val rows = runCatching { graph.symptomAssociations.forNutrient(s.nutrientId) }
+            .getOrDefault(emptyList())
+        _state.value = _state.value.copy(
+            deficiencySymptoms = rows.filter { it.kind == SymptomSeed.KIND_DEFICIENCY }
+                .sortedByDescending { it.confidence }
+                .map { SymptomRow(it.symptomKey, it.displayName, it.confidence, it.source == "RESEARCH") },
+            excessSymptoms = rows.filter { it.kind == SymptomSeed.KIND_EXCESS }
+                .sortedByDescending { it.confidence }
+                .map { SymptomRow(it.symptomKey, it.displayName, it.confidence, it.source == "RESEARCH") }
+        )
     }
 
     /** Re-aggregates the chart/grade/stats for a new window length (0 = All). */

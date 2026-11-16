@@ -8,6 +8,7 @@ import com.example.hoot.data.local.entity.FoodEntity
 import com.example.hoot.data.local.entity.FoodNutrientProfileEntity
 import com.example.hoot.data.local.entity.LookupCacheEntity
 import com.example.hoot.data.local.entity.NutrientDefinitionEntity
+import com.example.hoot.data.local.entity.NutrientSymptomEntity
 import com.example.hoot.data.local.entity.SourceEntity
 import kotlinx.coroutines.flow.Flow
 
@@ -79,6 +80,14 @@ interface ProfileDao {
     @Query("SELECT * FROM food_nutrient_profile")
     fun observeAll(): Flow<List<FoodNutrientProfileEntity>>
 
+    /**
+     * Bulk read for startup paths (startup-latency fix, 2026-11-16): smart
+     * picks previously fetched panels ONE QUERY PER FOOD (~hundreds of
+     * round-trips on every Home recompute during self-heal churn).
+     */
+    @Query("SELECT * FROM food_nutrient_profile")
+    suspend fun all(): List<FoodNutrientProfileEntity>
+
     @Query("SELECT * FROM food_nutrient_profile WHERE id = :id")
     suspend fun byId(id: String): FoodNutrientProfileEntity?
 
@@ -96,6 +105,32 @@ interface ProfileDao {
 
     @Query("DELETE FROM food_nutrient_profile WHERE id = :id")
     suspend fun delete(id: String)
+}
+
+/** DAO for [NutrientSymptomEntity] — the nutrient ↔ symptom association table. */
+@Dao
+interface NutrientSymptomDao {
+    @Query("SELECT * FROM nutrient_symptom")
+    suspend fun all(): List<NutrientSymptomEntity>
+
+    @Query("SELECT * FROM nutrient_symptom WHERE nutrientId = :nutrientId")
+    suspend fun forNutrient(nutrientId: String): List<NutrientSymptomEntity>
+
+    @Query("SELECT * FROM nutrient_symptom WHERE symptomKey = :symptomKey AND kind = :kind")
+    suspend fun forSymptom(symptomKey: String, kind: String): List<NutrientSymptomEntity>
+
+    @Query("SELECT COUNT(*) FROM nutrient_symptom WHERE nutrientId = :nutrientId AND source = 'RESEARCH'")
+    suspend fun researchCountFor(nutrientId: String): Int
+
+    @Upsert
+    suspend fun upsertAll(rows: List<NutrientSymptomEntity>)
+
+    @Query("DELETE FROM nutrient_symptom WHERE nutrientId = :nutrientId AND source = 'RESEARCH'")
+    suspend fun clearResearchFor(nutrientId: String)
+
+    /** Fold duplicate symptom keys into their canonical group (grouping fix). */
+    @Query("UPDATE nutrient_symptom SET symptomKey = :toKey WHERE symptomKey = :fromKey AND kind = :kind")
+    suspend fun renameSymptomKey(fromKey: String, toKey: String, kind: String)
 }
 
 /** DAO for [LookupCacheEntity] — first stop of the resolution pipeline. */

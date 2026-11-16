@@ -35,6 +35,9 @@ class FoodRepository(
     suspend fun profileForFood(foodId: String): FoodNutrientProfileEntity? =
         profileDao.forFood(foodId)
 
+    /** Bulk variant (startup-latency fix, 2026-11-16) — see [ProfileDao.all]. */
+    suspend fun profilesAll(): List<FoodNutrientProfileEntity> = profileDao.all()
+
     suspend fun profileById(id: String): FoodNutrientProfileEntity? = profileDao.byId(id)
 
     suspend fun upsertProfile(profile: FoodNutrientProfileEntity) = profileDao.upsert(profile)

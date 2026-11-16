@@ -7,6 +7,7 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.hoot.data.local.dao.DietaryProfileDao
+import com.example.hoot.data.local.dao.NutrientSymptomDao
 import com.example.hoot.data.local.dao.FoodDao
 import com.example.hoot.data.local.dao.FoodKnowledgeDao
 import com.example.hoot.data.local.dao.IngredientDao
@@ -31,6 +32,7 @@ import com.example.hoot.data.local.entity.LookupCacheEntity
 import com.example.hoot.data.local.entity.MealEntity
 import com.example.hoot.data.local.entity.NutrientDefinitionEntity
 import com.example.hoot.data.local.entity.NutrientGoalEntity
+import com.example.hoot.data.local.entity.NutrientSymptomEntity
 import com.example.hoot.data.local.entity.NutrientIntakeEntity
 import com.example.hoot.data.local.entity.RecommendationEntity
 import com.example.hoot.data.local.entity.ScoreSnapshotEntity
@@ -64,7 +66,8 @@ import kotlinx.coroutines.launch
         RecommendationEntity::class,
         ScoreSnapshotEntity::class,
         TailEntryEntity::class,
-        FoodKnowledgeEntity::class
+        FoodKnowledgeEntity::class,
+        NutrientSymptomEntity::class
     ],
     // v4: IngredientEntity/SupplementEntity gained `resolveAttempts` (bug fix:
     // permanently-failed items must not re-enqueue on every start). v3 → v4 is
@@ -77,7 +80,9 @@ import kotlinx.coroutines.launch
     // v7: new permanent `food_knowledge` table (feedback 2026-09-27) — the
     // amassing "what is high in what" database every researched food lands in.
     // Additive only; no existing data is touched.
-    version = 7,
+    // v8: new `nutrient_symptom` table (deficiency system, 2026-11-16) —
+    // curated seed + research-agent associations; additive only.
+    version = 8,
     exportSchema = false
 )
 abstract class HootDatabase : RoomDatabase() {
@@ -97,6 +102,7 @@ abstract class HootDatabase : RoomDatabase() {
     abstract fun scoreSnapshotDao(): ScoreSnapshotDao
     abstract fun tailEntryDao(): TailEntryDao
     abstract fun foodKnowledgeDao(): FoodKnowledgeDao
+    abstract fun nutrientSymptomDao(): NutrientSymptomDao
 
     companion object {
         private const val DB_NAME = "hoot.db"
@@ -122,7 +128,8 @@ abstract class HootDatabase : RoomDatabase() {
                     // v4 → v5 adds water/misc Tail-habit mapping + `tail_entries`.
                     // v5 → v6 adds the Tail-compatible capture columns on meals.
                     // v6 → v7 adds the permanent food_knowledge table.
-                    .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
+                    // v7 → v8 adds the nutrient_symptom table (deficiency system).
+                    .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
                     // Debug-only schema: a missed migration rebuilds from the seed.
                     .fallbackToDestructiveMigration(dropAllTables = true)
                     .build()
@@ -162,6 +169,37 @@ abstract class HootDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE meals ADD COLUMN healthNotes TEXT DEFAULT NULL")
                 db.execSQL("ALTER TABLE meals ADD COLUMN transcript TEXT DEFAULT NULL")
                 db.execSQL("ALTER TABLE meals ADD COLUMN photoPath TEXT DEFAULT NULL")
+            }
+        }
+
+        /**
+         * v7 → v8: `nutrient_symptom` table (deficiency system, 2026-11-16).
+         * Creates the table and seeds the curated associations immediately
+         * (existing installs get the seed; fresh installs get it via
+         * SeedCallback too — upsert makes both idempotent).
+         */
+        private val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `nutrient_symptom` (" +
+                        "`id` TEXT NOT NULL, " +
+                        "`nutrientId` TEXT NOT NULL, " +
+                        "`symptomKey` TEXT NOT NULL, " +
+                        "`displayName` TEXT NOT NULL, " +
+                        "`kind` TEXT NOT NULL, " +
+                        "`confidence` REAL NOT NULL, " +
+                        "`source` TEXT NOT NULL, " +
+                        "`researchedAt` INTEGER, " +
+                        "PRIMARY KEY(`id`))"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_nutrient_symptom_nutrientId` " +
+                        "ON `nutrient_symptom` (`nutrientId`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_nutrient_symptom_symptomKey_kind` " +
+                        "ON `nutrient_symptom` (`symptomKey`, `kind`)"
+                )
             }
         }
 
@@ -217,12 +255,13 @@ abstract class HootDatabase : RoomDatabase() {
         }
     }
 
-    /** Seeds `nutrient_definitions` exactly once, when the schema is created. */
+    /** Seeds `nutrient_definitions` + `nutrient_symptom` once, on schema create. */
     private class SeedCallback(private val scope: CoroutineScope) : Callback() {
         override fun onCreate(db: SupportSQLiteDatabase) {
             super.onCreate(db)
             scope.launch(Dispatchers.IO) {
                 instance?.nutrientDao()?.upsertAll(nutrientSeed())
+                instance?.nutrientSymptomDao()?.upsertAll(SymptomSeed.seed())
             }
         }
     }

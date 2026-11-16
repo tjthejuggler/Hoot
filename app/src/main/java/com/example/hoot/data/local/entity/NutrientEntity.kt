@@ -41,6 +41,28 @@ data class NutrientIntakeEntity(
 )
 
 /**
+ * One nutrient ↔ symptom association (deficiency system, 2026-11-16).
+ * Rows come from the curated seed (NIH-derived, [Source.SEED]) or from the
+ * per-nutrient research agent ([Source.RESEARCH]); `confidence` modulates
+ * how strongly the nutrient's deficiency drives the symptom in the
+ * likelihood blend.
+ */
+@Entity(
+    tableName = "nutrient_symptom",
+    indices = [Index("nutrientId"), Index(value = ["symptomKey", "kind"])]
+)
+data class NutrientSymptomEntity(
+    @PrimaryKey val id: String,            // "$nutrientId:$kind:$symptomKey"
+    val nutrientId: String,                // FK → nutrient_definitions
+    val symptomKey: String,                // "fatigue", "muscle_cramps" (normalized)
+    val displayName: String,               // "Fatigue", "Muscle cramps"
+    val kind: String,                      // "DEFICIENCY" | "EXCESS"
+    val confidence: Double,                // 0..1 strength of association
+    val source: String,                    // "SEED" | "RESEARCH"
+    val researchedAt: Long?                // null for seed rows
+)
+
+/**
  * Resolved nutrition panel for a food. `valuesJson` maps nutrient keys
  * ("protein", "iron", …) to amounts per [perAmount] [perUnit] in canonical units.
  */

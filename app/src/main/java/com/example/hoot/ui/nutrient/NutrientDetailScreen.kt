@@ -21,6 +21,8 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
@@ -32,6 +34,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -55,6 +58,7 @@ import coil3.request.ImageRequest
 import coil3.request.crossfade
 import com.example.hoot.data.local.entity.RecommendationEntity
 import com.example.hoot.domain.insights.Grade
+import com.example.hoot.domain.insights.NutrientResearcher
 import com.example.hoot.ui.charts.ChartTimeNavRow
 import com.example.hoot.ui.charts.LineChart
 import com.example.hoot.ui.charts.chartPan
@@ -454,6 +458,151 @@ fun NutrientDetailScreen(
                 }
             }
 
+            // ---- Symptoms (deficiency system) -----------------------------------
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp)) {
+                        SectionHeader(
+                            "Symptoms",
+                            "What too little — and too much — of ${state.def.name} can look like."
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text("If you're too low", style = MaterialTheme.typography.titleSmall)
+                        Spacer(Modifier.height(6.dp))
+                        if (state.deficiencySymptoms.isEmpty()) {
+                            Text(
+                                "No cataloged symptoms yet — run research below.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        } else {
+                            SymptomChipFlow(state.deficiencySymptoms)
+                        }
+                        if (state.excessSymptoms.isNotEmpty()) {
+                            Spacer(Modifier.height(12.dp))
+                            Text("If you consistently overshoot", style = MaterialTheme.typography.titleSmall)
+                            Spacer(Modifier.height(6.dp))
+                            SymptomChipFlow(state.excessSymptoms)
+                        }
+                        Spacer(Modifier.height(12.dp))
+                    }
+                }
+            }
+
+            // ---- Research (own card + scope dropdown) ---------------------------
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp)) {
+                        SectionHeader(
+                            "Research",
+                            "Send an agent with everything Hoot knows about ${state.def.name} " +
+                                "to find what's missing."
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        var scopeMenu by remember { mutableStateOf(false) }
+                        val scopeLabel = when (state.researchScope) {
+                            NutrientResearcher.Scope.SYMPTOMS_AND_FOODS -> "Deficiencies + foods"
+                            NutrientResearcher.Scope.SYMPTOMS -> "Deficiencies only"
+                            NutrientResearcher.Scope.FOODS -> "Foods only"
+                        }
+                        Box {
+                            OutlinedButton(onClick = { scopeMenu = true }) {
+                                Text("Focus: $scopeLabel ▾")
+                            }
+                            DropdownMenu(expanded = scopeMenu, onDismissRequest = { scopeMenu = false }) {
+                                DropdownMenuItem(
+                                    text = { Text("Deficiencies + foods (default)") },
+                                    onClick = {
+                                        vm.setResearchScope(NutrientResearcher.Scope.SYMPTOMS_AND_FOODS)
+                                        scopeMenu = false
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Deficiencies only") },
+                                    onClick = {
+                                        vm.setResearchScope(NutrientResearcher.Scope.SYMPTOMS)
+                                        scopeMenu = false
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Foods only") },
+                                    onClick = {
+                                        vm.setResearchScope(NutrientResearcher.Scope.FOODS)
+                                        scopeMenu = false
+                                    }
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        Button(
+                            onClick = { vm.researchNutrient() },
+                            enabled = !state.researching
+                        ) {
+                            Text(if (state.researching) "Researching…" else "🔍 Research ${state.def.name}")
+                        }
+                        state.researchMessage?.let { msg ->
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                msg,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                }
+            }
+
+            // ---- "Just added" research popup -------------------------------------
+            state.lastResearch?.let { result ->
+                item {
+                    // Rendered as an overlay-style card (kept inline for
+                    // simplicity; dismiss via the button below).
+                    Card(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp)
+                    ) {
+                        Column(Modifier.padding(16.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    "New from research",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                TextButton(onClick = vm::dismissResearchResult) {
+                                    Text("Dismiss")
+                                }
+                            }
+                            if (result.newDeficiencySymptoms.isNotEmpty()) {
+                                Text("Deficiency symptoms", style = MaterialTheme.typography.titleSmall)
+                                result.newDeficiencySymptoms.forEach {
+                                    Text("• $it", style = MaterialTheme.typography.bodyMedium)
+                                }
+                                Spacer(Modifier.height(6.dp))
+                            }
+                            if (result.newExcessSymptoms.isNotEmpty()) {
+                                Text("Too-much symptoms", style = MaterialTheme.typography.titleSmall)
+                                result.newExcessSymptoms.forEach {
+                                    Text("• $it", style = MaterialTheme.typography.bodyMedium)
+                                }
+                                Spacer(Modifier.height(6.dp))
+                            }
+                            if (result.newFoods.isNotEmpty()) {
+                                Text("Foods", style = MaterialTheme.typography.titleSmall)
+                                result.newFoods.forEach {
+                                    Text("• $it", style = MaterialTheme.typography.bodyMedium)
+                                }
+                            }
+                            Text(
+                                "Already integrated into your symptoms, Home ranking and food picks.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+
             // ---- Reference cards -------------------------------------------------
             item { TargetsCard(state) }
             state.def.deficiencySymptoms?.takeIf { it.isNotBlank() }?.let { sym ->
@@ -461,6 +610,48 @@ fun NutrientDetailScreen(
             }
             state.def.excessRisks?.takeIf { it.isNotBlank() }?.let { risks ->
                 item { EffectsCard("If you consistently overshoot", risks) }
+            }
+        }
+    }
+}
+
+/**
+ * Symptom rows with confidence bars. The label flexes and WRAPS (weight 1f,
+ * soft break) and the percentage sits inline when it fits; when space runs
+ * out the whole row wraps so digits never stack (feedback 2026-11-16). The
+ * 🔬 researched marker is dropped from labels (emoji clutter feedback).
+ */
+@Composable
+private fun SymptomChipFlow(rows: List<SymptomRow>) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        rows.forEach { s ->
+            Row(verticalAlignment = Alignment.Top) {
+                Box(
+                    Modifier
+                        .padding(top = 6.dp)
+                        .size(width = 44.dp, height = 5.dp)
+                        .background(
+                            MaterialTheme.colorScheme.primary.copy(
+                                alpha = (0.25 + s.confidence * 0.75).toFloat()
+                            ),
+                            RoundedCornerShape(3.dp)
+                        )
+                )
+                Spacer(Modifier.width(8.dp))
+                // weight(1f) reserves the leftover width; the label wraps
+                // INSIDE it and the fixed-size percent always renders on
+                // whatever line has room — never overlapped.
+                Text(
+                    s.display,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "${(s.confidence * 100).toInt()}%",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     }

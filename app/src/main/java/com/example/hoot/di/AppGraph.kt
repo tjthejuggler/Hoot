@@ -23,8 +23,10 @@ import com.example.hoot.data.tail.TailClient
 import com.example.hoot.data.tail.TailPushClient
 import com.example.hoot.data.tail.TailSyncManager
 import com.example.hoot.domain.insights.GapResearcher
+import com.example.hoot.domain.insights.NutrientResearcher
 import com.example.hoot.domain.insights.RecommendationEngine
 import com.example.hoot.domain.insights.SmartFoodProvider
+import com.example.hoot.data.repository.NutrientSymptomRepository
 import com.example.hoot.domain.nutrition.IntakeAggregator
 import com.example.hoot.domain.nutrition.NutritionProcessor
 import com.example.hoot.domain.nutrition.NutritionResolver
@@ -240,6 +242,33 @@ class AppGraph(context: Context) {
     )
 
     /**
+     * Nutrient ↔ symptom associations (deficiency system, 2026-11-16):
+     * curated seed + research rows backing the likelihood engines.
+     */
+    val symptomAssociations = NutrientSymptomRepository(database.nutrientSymptomDao())
+
+    /**
+     * Per-nutrient research agent (deficiency system): one LLM call carrying
+     * everything known about the nutrient, returning NEW symptoms + foods.
+     */
+    val nutrientResearcher = NutrientResearcher(
+        definitions = nutrientDefinitions,
+        symptoms = symptomAssociations,
+        knowledge = foodKnowledge,
+        resolver = nutritionResolver,
+        settings = settings,
+        llm = llmClient
+    )
+
+    /**
+     * In-process broadcast: a research pass landed new facts (symptoms /
+     * foods). Home collects this to recompute the likely-symptoms ranking
+     * and smart picks from FRESH knowledge without waiting for a ledger
+     * change (deficiency-system integration, 2026-11-16).
+     */
+    val researchEvents = kotlinx.coroutines.flow.MutableSharedFlow<String>(replay = 0)
+
+    /**
      * Per-DISTINCT-FOOD background queue draining unresolved ingredients +
      * supplements (grouped by normalized foodKey, cache-first, batched LLM
      * calls, 3 parallel workers, sliding-minute rate guard); exposes
@@ -272,7 +301,8 @@ class AppGraph(context: Context) {
         settings = settings,
         tailConfig = tailConfig,
         nutrients = nutrients,
-        recommendationEngine = recommendationEngine
+        recommendationEngine = recommendationEngine,
+        symptomAssociations = symptomAssociations
     )
 
     init {

@@ -33,6 +33,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -110,6 +111,9 @@ fun HomeScreen(
     var showDatePicker by remember { mutableStateOf(false) }
     var showConsumedDetail by remember { mutableStateOf(false) }
     var showAllPicks by remember { mutableStateOf(false) }
+    var symptomDetail by remember {
+        mutableStateOf<com.example.hoot.domain.insights.SymptomMatcher.RankedSymptom?>(null)
+    }
 
     // Selected dashboard day (header arrows / date picker navigate it).
     val selectedDay by vm.day.collectAsStateWithLifecycle()
@@ -147,6 +151,15 @@ fun HomeScreen(
             tailEntries = tailEntries,
             waterUnitMode = waterUnitMode,
             onDismiss = { showConsumedDetail = false }
+        )
+    }
+    symptomDetail?.let { symptom ->
+        SymptomDetailSheet(
+            symptomKey = symptom.symptomKey,
+            display = symptom.displayName,
+            nutrients = symptom.contributors,
+            onOpenNutrient = onOpenNutrient,
+            onDismiss = { symptomDetail = null }
         )
     }
     if (showAllPicks) {
@@ -242,7 +255,26 @@ fun HomeScreen(
             }
         }
         item {
-            if (state.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+            // Startup UX fix (2026-11-16): with a cached snapshot the screen
+            // is fully usable instantly; the live refresh continues in the
+            // background and only this thin hint shows while it runs.
+            if (state.loading) {
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+            } else if (state.fromCache) {
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.5.dp)
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "Updating from your latest logs…",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
         }
 
         // ---- Consumed so far (selected day) --------------------------------
@@ -380,6 +412,21 @@ fun HomeScreen(
                             )
                         }
                     }
+                }
+            }
+        }
+
+        // ---- Likely symptoms (deficiency system) ------------------------------
+        if (state.likelySymptoms.isNotEmpty()) {
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    LikelySymptomsCard(
+                        symptoms = state.likelySymptoms,
+                        onOpenSymptom = { key ->
+                            state.likelySymptoms.firstOrNull { it.symptomKey == key }
+                                ?.let { symptomDetail = it }
+                        }
+                    )
                 }
             }
         }

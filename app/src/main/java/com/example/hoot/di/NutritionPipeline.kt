@@ -39,7 +39,8 @@ internal class NutritionPipeline(
     private val settings: SettingsRepository,
     private val tailConfig: TailConfigRepository,
     private val nutrients: NutrientRepository,
-    private val recommendationEngine: RecommendationEngine
+    private val recommendationEngine: RecommendationEngine,
+    private val symptomAssociations: com.example.hoot.data.repository.NutrientSymptomRepository
 ) {
     /** Launches every collector. Call once, after all dependencies are wired. */
     fun start() {
@@ -126,6 +127,22 @@ internal class NutritionPipeline(
                     nutritionProcessor.kick()
                 }
             }.onFailure { android.util.Log.e(TAG, "supplement self-heal failed", it) }
+        }
+        // Symptom-seed fill (deficiency system, 2026-11-16): v7→v8 installs
+        // got the table via raw-SQL migration but not the curated rows
+        // (migrations can't use DAOs) — fill once, idempotent.
+        scope.launch {
+            runCatching { symptomAssociations.ensureSeeded() }
+                .onFailure { android.util.Log.e(TAG, "symptom seed fill failed", it) }
+            // Grouping self-heal (feedback 2026-11-16): fold duplicate
+            // symptom keys ("dry_itchy_skin" → "dry_skin") once per launch;
+            // idempotent — a canonical catalog plans zero renames.
+            runCatching {
+                val renames = symptomAssociations.canonicalizeKeys()
+                if (renames.isNotEmpty()) {
+                    android.util.Log.i(TAG, "symptom canonicalization folded ${renames.size} keys")
+                }
+            }.onFailure { android.util.Log.e(TAG, "symptom canonicalization failed", it) }
         }
         // Peer repair (omega-3 feedback, 2026-11-16): clone contributions
         // from resolved rows with the same label onto capped siblings, then

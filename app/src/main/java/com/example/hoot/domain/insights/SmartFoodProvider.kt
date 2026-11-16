@@ -246,12 +246,20 @@ class SmartFoodProvider(
 
     // ---- Cache scan -----------------------------------------------------------
 
-    /** All diet-agnostic resolved foods with usable per-100 g panels. */
+    /**
+     * All diet-agnostic resolved foods with usable per-100 g panels.
+     *
+     * Startup-latency fix (2026-11-16): panels are now read in ONE bulk
+     * query instead of one query PER FOOD — the N+1 (~hundreds of
+     * round-trips per Home recompute, multiplied by self-heal-ledger churn
+     * right after launch) was a major share of the Home spinner stall.
+     */
     private suspend fun cacheCandidates(): List<SmartCandidateFood> {
+        val profilesById = nutrients.profilesAll().associateBy { it.foodId }
         val out = ArrayList<SmartCandidateFood>()
         for (food in nutrients.foodsAll()) {
             if (food.isSupplement) continue
-            val profile = nutrients.profileForFood(food.id) ?: continue
+            val profile = profilesById[food.id] ?: continue
             if (profile.confidence < 0.5) continue
             val values = parseProfileValues(profile) ?: continue
             if (values.isEmpty()) continue

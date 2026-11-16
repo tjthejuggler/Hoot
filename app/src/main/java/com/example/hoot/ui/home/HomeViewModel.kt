@@ -8,9 +8,12 @@ import com.example.hoot.data.local.entity.MealEntity
 import com.example.hoot.data.local.entity.ScoreSnapshotEntity
 import com.example.hoot.data.local.entity.SupplementEntity
 import com.example.hoot.data.local.entity.TailEntryEntity
+import com.example.hoot.data.local.dao.NutrientDayTotal
+import com.example.hoot.domain.insights.DeficiencyModel
 import com.example.hoot.domain.insights.FocusNowEngine
 import com.example.hoot.domain.insights.FocusNowInput
 import com.example.hoot.domain.insights.FocusNowItem
+import com.example.hoot.domain.insights.SymptomMatcher
 import com.example.hoot.domain.insights.Insight
 import com.example.hoot.domain.insights.InsightsEngine
 import com.example.hoot.domain.insights.NutrientInsightDef
@@ -18,6 +21,8 @@ import com.example.hoot.domain.insights.SmartFoodPick
 import com.example.hoot.domain.insights.WindowData
 import com.example.hoot.domain.score.ScoreComponent
 import com.example.hoot.domain.score.ScoreStatus
+import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.flow.onEach
 import com.example.hoot.ui.common.LIMIT_TRACKER_IDS
 import com.example.hoot.ui.common.dayKeyMinusDays
 import com.example.hoot.ui.common.dayKeyPlusDays
@@ -69,10 +74,18 @@ data class HomeUiState(
      * exhausted. Always precomputed (zero-LLM, memoized).
      */
     val deepSmartPicks: List<SmartFoodPick> = emptyList(),
+    /** Likely symptoms from the deficiency model (deficiency system, 2026-11-16). */
+    val likelySymptoms: List<SymptomMatcher.RankedSymptom> = emptyList(),
     /** True when focus gaps exist but the cache is too cold to pick from. */
     val smartPicksCacheCold: Boolean = false,
     /** Size of the permanent food-knowledge base (feedback 2026-09-27). */
-    val knowledgeCount: Int = 0
+    val knowledgeCount: Int = 0,
+    /**
+     * Startup UX fix (2026-11-16): this state came from the last-session
+     * cache — the live DB pipeline is still refreshing it in the background.
+     * Shows the "updating" hint instead of a full-screen loading state.
+     */
+    val fromCache: Boolean = false
 )
 
 /**
@@ -105,7 +118,27 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
      */
     private val _refreshTick = MutableStateFlow(0)
 
-    val state: StateFlow<HomeUiState> = combine(_day, _refreshTick) { d, _ -> d }
+    /**
+     * Research tick (deficiency system): bumped whenever a research pass
+     * lands new associations/foods, so the symptoms + picks sections
+     * recompute from FRESH facts without waiting for a ledger change.
+     */
+    private val _researchTick = MutableStateFlow(0)
+
+    /** Called by the nutrient page VM after a research pass (same process). */
+    fun onResearchLanded() {
+        _researchTick.value += 1
+    }
+
+    init {
+        // Research integration: any completed research pass re-ranks the
+        // likely-symptoms + smart-picks sections with the fresh facts.
+        viewModelScope.launch {
+            graph.researchEvents.collect { _researchTick.value += 1 }
+        }
+    }
+
+    val state: StateFlow<HomeUiState> = combine(_day, _refreshTick, _researchTick) { d, _, _ -> d }
         .flatMapLatest { day ->
             // Reactive over BOTH the selected day AND the trailing-7d range:
             // backfills that touch only HISTORICAL days (supplement
@@ -183,6 +216,16 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 
                 val byId = comps.associateBy { it.nutrientId }
 
+                // ---- Likely symptoms (deficiency system, 2026-11-16) ------
+                // Multi-window coverage → DeficiencyModel assessments →
+                // SymptomMatcher ranking over seed+research associations.
+                val likelySymptoms = runCatching { computeSymptoms(day, comps, windowTotals) }
+                    .onFailure {
+                        if (it is kotlinx.coroutines.CancellationException) throw it
+                        android.util.Log.e("HootSymptoms", "symptom ranking failed", it)
+                    }
+                    .getOrDefault(emptyList())
+
                 // ---- Smart picks (feature C): multi-nutrient food matching ----
                 // Flow-driven: recomputes whenever today's totals (and hence
                 // the focus list) change; cache-only → instant.
@@ -227,6 +270,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                         .mapNotNull { byId[it] },
                     insights = _insights.value,
                     sparkline = _sparkValues(),
+                    likelySymptoms = likelySymptoms,
                     unresolvedCount = _unresolved.value,
                     smartPicks = smartResult?.picks ?: emptyList(),
                     allSmartPicks = smartResult?.allPicks ?: emptyList(),
@@ -241,6 +285,22 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                     knowledgeCount = runCatching { graph.foodKnowledge.count() }.getOrDefault(0)
                 )
                 kotlinx.coroutines.flow.flowOf(ui)
+            }
+        }
+        .onStart {
+            // Cache-first startup (2026-11-16): emit the last session's
+            // dashboard IMMEDIATELY while the live pipeline runs. The first
+            // live emission replaces it wholesale (fromCache=false there);
+            // until then the user sees yesterday's-real data instead of a
+            // spinner that, during startup self-heal ledger churn, could
+            // spin for a very long time with nothing on screen.
+            HomeStateCache.load(getApplication())?.let { emit(it) }
+        }
+        .onEach { state ->
+            // Persist only LIVE results (a cached emission would just
+            // rewrite the same file). Skip the placeholder initial state.
+            if (!state.fromCache && !state.loading) {
+                HomeStateCache.store(getApplication(), state)
             }
         }
         .stateIn(viewModelScope, SharingStarted.Eagerly, HomeUiState(day = todayKey(), loading = true))
@@ -366,6 +426,83 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                     )
                 )
             }
+    }
+
+    /**
+     * Deficiency assessments over 7/30/90/365-day windows → ranked symptom
+     * list (deficiency system, 2026-11-16). Pure read path; never throws
+     * past the caller's runCatching.
+     */
+    private suspend fun computeSymptoms(
+        day: String,
+        comps: List<ScoreComponent>,
+        weekTotals: Map<String, List<NutrientDayTotal>>
+    ): List<SymptomMatcher.RankedSymptom> {
+        val associations = graph.symptomAssociations.all()
+        if (associations.isEmpty()) return emptyList()
+        val windows = intArrayOf(7, 30, 90, 365)
+        // Startup-path fix (2026-11-16): the old loop issued ONE
+        // dailyTotalsForWindow query PER NUTRIENT PER WINDOW (~37 nutrients ×
+        // 3 extra windows ≈ 111 full-window GROUP BY scans), each re-reading
+        // the same ledger. Right after launch the self-heals re-trigger this
+        // repeatedly, so Home's spinner could spin for a very long time.
+        // Pre-fetch each window ONCE and slice in memory — same output,
+        // 3 queries total.
+        val windowRows = HashMap<Int, Map<String, List<NutrientDayTotal>>>(windows.size)
+        for (w in windows) {
+            if (w == FocusNowEngine.RECENT_DAYS) continue // reuse weekTotals
+            windowRows[w] = runCatching {
+                graph.nutrients.dailyTotalsForWindow(dayKeyMinusDays(day, (w - 1).toLong()), day)
+            }.getOrDefault(emptyList()).groupBy { it.nutrientId }
+        }
+        val inputs = ArrayList<DeficiencyModel.Input>(comps.size)
+        for (comp in comps) {
+            if (comp.target <= 0) continue
+            val stats = windows.map { w ->
+                val from = dayKeyMinusDays(day, (w - 1).toLong())
+                val totals = if (w == FocusNowEngine.RECENT_DAYS) {
+                    // Reuse the already-fetched 7-day rows.
+                    weekTotals[comp.nutrientId].orEmpty().filter { (it.day ?: "") >= from }
+                } else {
+                    windowRows[w]?.get(comp.nutrientId).orEmpty()
+                        .filter { (it.day ?: "") >= from }
+                }
+                val tracked = totals.size
+                if (tracked == 0) return@map DeficiencyModel.WindowStat(w, 0, 0, 1.0)
+                var low = 0
+                var covSum = 0.0
+                for (t in totals) {
+                    val cov = if (comp.isLimitTracker) {
+                        if (t.total <= comp.target) 1.0 else (comp.target / t.total)
+                    } else (t.total / comp.target).coerceAtMost(1.0)
+                    covSum += cov
+                    if (cov < DeficiencyModel.LOW_RATIO) low++
+                }
+                DeficiencyModel.WindowStat(w, tracked, low, covSum / tracked)
+            }
+            inputs += DeficiencyModel.Input(
+                nutrientId = comp.nutrientId,
+                name = comp.name,
+                tier = comp.tier,
+                unit = comp.unit,
+                target = comp.target,
+                windows = stats,
+                todayCoverage = comp.coverage
+            )
+        }
+        val assessments = inputs.map { DeficiencyModel.assess(it) }
+            .filter { it.likelihood >= DeficiencyModel.REPORT_THRESHOLD }
+        return SymptomMatcher.rank(
+            deficiencies = assessments,
+            max = 25,
+            associations = associations.map {
+                SymptomMatcher.Association(
+                    nutrientId = it.nutrientId, symptomKey = it.symptomKey,
+                    displayName = it.displayName, kind = it.kind,
+                    confidence = it.confidence
+                )
+            }
+        )
     }
 
     /** `["a","b"]` → [a, b]; tolerant of null/blank/invalid JSON. */
