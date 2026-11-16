@@ -53,6 +53,15 @@ internal class NutritionPipeline(
                 if (ingested.mealsInserted > 0 || ingested.supplementsInserted > 0 ||
                     ingested.mealsUpdated > 0
                 ) {
+                    // Peer-repair FIRST: newly-synced rows whose identical
+                    // label already resolved elsewhere (daily brand pills)
+                    // get their panel cloned instantly, so the weekly
+                    // average never zeroes while waiting for an LLM batch.
+                    runCatching {
+                        if (nutritionProcessor.repairSupplementsFromPeers() > 0) {
+                            intakeAggregator.recomputeDays(null)
+                        }
+                    }
                     nutritionProcessor.kick()
                 }
             }
@@ -92,6 +101,44 @@ internal class NutritionPipeline(
                 intakeAggregator.recomputeDays(null)
                 scoreSnapshotter.recomputeAll()
             }.onFailure { android.util.Log.e(TAG, "ledger self-heal failed", it) }
+        }
+        // Supplement self-heal (vitamin-D-2%-bug, 2026-11-16): rows whose
+        // labels are pure abbreviations ("D3 25µg", "K2 20µg", "C 1g") were
+        // unresolvable before the abbreviation map existed — FoodNormalizer
+        // strips the digits, the LLM fallback burned all 3 attempts, and the
+        // rows sat capped with empty nutrientContributions, silently zeroing
+        // every supplement-sourced nutrient in the averages. The label parse
+        // is now FREE and deterministic, so uncap exactly those rows; the
+        // startup kick() below resolves them and the ledger self-heal (which
+        // waits for the drain via the post-drain refresh) recomputes the
+        // days. Idempotent: resolved rows exit via contributions, unknown
+        // labels re-cap at 3 and stay out of the queue.
+        scope.launch {
+            runCatching {
+                val uncapped = nutritionProcessor.uncapAbbreviationSupplements()
+                if (uncapped > 0) {
+                    android.util.Log.i(TAG, "supplement self-heal uncapped $uncapped abbreviation rows")
+                    // This coroutine races the synchronous startup kick() —
+                    // which may already have snapshotted its queue BEFORE the
+                    // uncap landed, leaving the repaired rows unqueued. Kick
+                    // AGAIN so the drain picks them up; already-resolved rows
+                    // exit immediately (no double work).
+                    nutritionProcessor.kick()
+                }
+            }.onFailure { android.util.Log.e(TAG, "supplement self-heal failed", it) }
+        }
+        // Peer repair (omega-3 feedback, 2026-11-16): clone contributions
+        // from resolved rows with the same label onto capped siblings, then
+        // recompute the affected days' ledger — zero LLM spend.
+        scope.launch {
+            runCatching {
+                val repaired = nutritionProcessor.repairSupplementsFromPeers()
+                if (repaired > 0) {
+                    android.util.Log.i(TAG, "supplement peer repair fixed $repaired rows")
+                    intakeAggregator.recomputeDays(null)
+                    scoreSnapshotter.recomputeAll()
+                }
+            }.onFailure { android.util.Log.e(TAG, "supplement peer repair failed", it) }
         }
         // Drain anything left unresolved from previous runs at startup. With
         // resolution state persisted (and preserving re-ingest), this enqueues

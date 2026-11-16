@@ -1,6 +1,7 @@
 package com.example.hoot.domain.nutrition
 
 import android.util.Log
+import com.example.hoot.data.local.entity.SupplementEntity
 import com.example.hoot.data.repository.MealRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -205,6 +206,64 @@ class NutritionProcessor(
                 day = it.day.ifBlank { DayKeys.todayKey() }
             )
         }
+
+    /**
+     * One-time repair hook (vitamin-D-2%-bug, 2026-11-16): gives attempt-
+     * capped rows whose label now parses via the abbreviation map a fresh
+     * set of attempts. Returns rows uncapped (0 when nothing to repair).
+     * The normal [kick] drain resolves them with the FREE label parse —
+     * no LLM spend — and the post-drain refresh recomputes affected days.
+     */
+    suspend fun uncapAbbreviationSupplements(): Int {
+        val capped = meals.supplementsCapped()      // unresolved + attempts ≥ cap
+        val repairable = capped.filter {
+            val parsed = SupplementLabelParser.parse(it.rawText.ifBlank { it.label })
+            parsed?.nutrientId != null && parsed.doseAmount != null && parsed.doseUnit != null
+        }
+        if (repairable.isEmpty()) return 0
+        meals.resetAttemptsForSupplements(repairable.map { it.id })
+        return repairable.size
+    }
+
+    /**
+     * Peer repair (omega-3-zeroes feedback, 2026-11-16): brand-name
+     * supplements ("Omega-3 Sunday Natural") carry no parseable dose, so the
+     * FREE label path can never resolve them — they depend on LLM batches
+     * that burn all 3 attempts when sessions are interrupted, capping rows
+     * that are IDENTICAL to rows already resolved weeks ago. A resolved row
+     * with the same exact label (or same parsed name+dose) carries the same
+     * per-serving panel, so clone its contributions + food link onto every
+     * capped/unresolved sibling — zero LLM spend. Returns rows repaired.
+     */
+    suspend fun repairSupplementsFromPeers(): Int {
+        val unresolved = meals.unresolvedSupplements() + meals.supplementsCapped()
+        if (unresolved.isEmpty()) return 0
+        val byLabel = meals.resolvedSupplements().associateBy { it.label.trim().lowercase() }
+        val byNameDose = meals.resolvedSupplements()
+            .filter { it.doseAmount != null && it.doseUnit != null }
+            .associateBy { "${it.label.trim().lowercase()}|${it.doseAmount}|${it.doseUnit}" }
+        val repaired = ArrayList<SupplementEntity>()
+        for (row in unresolved) {
+            val peer = byLabel[row.label.trim().lowercase()]
+                ?: row.doseAmount?.let { d ->
+                    row.doseUnit?.let { u ->
+                        byNameDose["${row.label.trim().lowercase()}|$d|$u"]
+                    }
+                }
+                ?: continue
+            val foodId = peer.resolvedFoodId ?: continue
+            val contributions = peer.nutrientContributions.takeIf { it.isNotBlank() && it != "[]" }
+                ?: continue
+            repaired += row.copy(
+                resolvedFoodId = foodId,
+                nutrientContributions = contributions
+            )
+        }
+        if (repaired.isEmpty()) return 0
+        for (row in repaired) meals.upsertSupplement(row)
+        Log.i(TAG, "peer repair cloned ${repaired.size} supplement rows from resolved siblings")
+        return repaired.size
+    }
 
     // ── The per-food drain ───────────────────────────────────────────────
 

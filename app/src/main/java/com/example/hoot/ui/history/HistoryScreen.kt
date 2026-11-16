@@ -61,7 +61,10 @@ import com.example.hoot.ui.common.prettyDay
  * header (avg, % days meeting, trend) and top food contributors.
  */
 @Composable
-fun HistoryScreen(historyVm: HistoryViewModel = viewModel()) {
+fun HistoryScreen(
+    historyVm: HistoryViewModel = viewModel(),
+    onOpenNutrient: (String) -> Unit = {}
+) {
     val state by historyVm.state.collectAsStateWithLifecycle()
     val window by historyVm.window.collectAsStateWithLifecycle()
     val search by historyVm.search.collectAsStateWithLifecycle()
@@ -99,7 +102,7 @@ fun HistoryScreen(historyVm: HistoryViewModel = viewModel()) {
         }
 
         if (tab == 0) {
-            NutrientTab(state, historyVm, search)
+            NutrientTab(state, historyVm, search, onOpenNutrient)
         } else {
             DaysTab(state)
         }
@@ -110,7 +113,8 @@ fun HistoryScreen(historyVm: HistoryViewModel = viewModel()) {
 private fun NutrientTab(
     state: HistoryUiState,
     historyVm: HistoryViewModel,
-    search: String
+    search: String,
+    onOpenNutrient: (String) -> Unit
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -120,7 +124,11 @@ private fun NutrientTab(
         // ---- Selected nutrient header + picker toggle ----------------------
         item {
             state.selected?.let { def ->
-                NutrientHeader(def, state.goals[def.id]?.targetValue)
+                NutrientHeader(
+                    def = def,
+                    goalTarget = state.goals[def.id]?.targetValue,
+                    onOpenDetail = { onOpenNutrient(def.id) }
+                )
                 Spacer(Modifier.height(4.dp))
             }
         }
@@ -264,16 +272,27 @@ private fun NutrientTab(
             PickerRow(
                 def = def,
                 selected = def.id == state.selected?.id,
-                onClick = { historyVm.select(def) }
+                onClick = {
+                    historyVm.select(def)
+                    onOpenNutrient(def.id)
+                }
             )
         }
     }
 }
 
 @Composable
-private fun NutrientHeader(def: NutrientDefinitionEntity, goalTarget: Double?) {
+private fun NutrientHeader(
+    def: NutrientDefinitionEntity,
+    goalTarget: Double?,
+    onOpenDetail: () -> Unit = {}
+) {
     val isLimit = def.id in com.example.hoot.ui.common.LIMIT_TRACKER_IDS
-    Card(Modifier.fillMaxWidth()) {
+    Card(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onOpenDetail)
+    ) {
         Column(Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
@@ -284,7 +303,7 @@ private fun NutrientHeader(def: NutrientDefinitionEntity, goalTarget: Double?) {
                 Column(Modifier.weight(1f)) {
                     Text(def.name, style = MaterialTheme.typography.titleLarge)
                     Text(
-                        "${def.group} · ${def.unit}",
+                        "${def.group} · ${def.unit} · tap for full page",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

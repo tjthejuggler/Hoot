@@ -180,7 +180,9 @@ internal class SupplementResolver(
         unitsById: Map<String, String>
     ): JSONObject? {
         if (parsed?.doseAmount == null || parsed.doseUnit == null) return null
-        val nutrientId = NutritionResolver.KNOWN_SUPPLEMENT_NUTRIENTS[parsed.normalizedName] ?: return null
+        val nutrientId = NutritionResolver.KNOWN_SUPPLEMENT_NUTRIENTS[parsed.normalizedName]
+            ?: parsed.nutrientId                       // abbreviation path ("D3", "K2"…)
+            ?: return null
         val canonical = Units.canonicalNutrientAmount(
             nutrientId, parsed.doseAmount, parsed.doseUnit, unitsById[nutrientId] ?: return null
         ) ?: return null
@@ -202,12 +204,15 @@ internal class SupplementResolver(
             category = "supplement", isSupplement = true,
             imageTerm = imageTerm
         )
+        // Backfill the parsed dose when the row pre-dates dose capture —
+        // the repair path and the day-detail UI both read these fields.
+        val parsed = SupplementLabelParser.parse(entity.rawText.ifBlank { entity.label })
         meals.upsertSupplement(
             entity.copy(
                 resolvedFoodId = food.id,
                 nutrientContributions = contributions.toString(),
-                doseAmount = entity.doseAmount,
-                doseUnit = entity.doseUnit
+                doseAmount = entity.doseAmount ?: parsed?.doseAmount,
+                doseUnit = entity.doseUnit ?: parsed?.doseUnit
             )
         )
     }

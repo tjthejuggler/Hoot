@@ -39,6 +39,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -59,8 +60,6 @@ import com.example.hoot.ui.charts.ProgressRing
 import com.example.hoot.ui.charts.Sparkline
 import com.example.hoot.ui.charts.scoreColor
 import com.example.hoot.ui.common.EmptyState
-import com.example.hoot.ui.common.NutrientDetailSheet
-import com.example.hoot.ui.common.NutrientDetailViewModel
 import com.example.hoot.ui.common.NutrientProgressRow
 import com.example.hoot.ui.common.ScoreExplainerSheet
 import com.example.hoot.ui.common.SectionHeader
@@ -86,11 +85,13 @@ import com.example.hoot.ui.theme.ScoreMid
 fun HomeScreen(
     onOpenHistory: () -> Unit,
     onOpenInsights: () -> Unit,
-    onOpenTailSetup: () -> Unit = {}
+    onOpenTailSetup: () -> Unit = {},
+    onOpenNutrient: (String) -> Unit = {},
+    /** Day preselected by an external navigation (nutrient day-node "Open this day"). */
+    pendingDay: String? = null
 ) {
     val context = LocalContext.current
     val vm: HomeViewModel = viewModel()
-    val detailVm: NutrientDetailViewModel = viewModel()
     val state by vm.state.collectAsStateWithLifecycle()
     val meals by vm.meals.collectAsStateWithLifecycle()
     val supplements by vm.supplements.collectAsStateWithLifecycle()
@@ -104,7 +105,6 @@ fun HomeScreen(
     val nutritionState by context.appGraph.nutritionProcessor.state.collectAsStateWithLifecycle()
 
     var showScoreExplainer by remember { mutableStateOf(false) }
-    var detailNutrientId by remember { mutableStateOf<String?>(null) }
     var tiersExpanded by remember { mutableStateOf(false) }
     var smartPickDetail by remember { mutableStateOf<com.example.hoot.domain.insights.SmartFoodPick?>(null) }
     var showDatePicker by remember { mutableStateOf(false) }
@@ -115,6 +115,11 @@ fun HomeScreen(
     val selectedDay by vm.day.collectAsStateWithLifecycle()
     val isToday = selectedDay == todayKey()
 
+    // External day preselection (nutrient day-node "Open this day").
+    LaunchedEffect(pendingDay) {
+        pendingDay?.let { vm.selectDay(it) }
+    }
+
     // Water unit interpretation (feedback 2026-09): what a bare number in the
     // Tail water habit means ("ml" for Tail's raw-ml logs). Reactive — the
     // card re-sums immediately when the mode changes in Tail setup.
@@ -124,10 +129,6 @@ fun HomeScreen(
 
     if (showScoreExplainer) {
         ScoreExplainerSheet(snapshot = state.score, onDismiss = { showScoreExplainer = false })
-    }
-    detailNutrientId?.let { id ->
-        detailVm.open(id)
-        NutrientDetailSheet(vm = detailVm, onDismiss = { detailNutrientId = null })
     }
     smartPickDetail?.let { pick ->
         SmartPickDetailSheet(
@@ -310,7 +311,7 @@ fun HomeScreen(
                                 target = item.target,
                                 todayCoverage = item.todayCoverage,
                                 recentCoverage = item.recentCoverage,
-                                onClick = { detailNutrientId = item.nutrientId }
+                                onClick = { onOpenNutrient(item.nutrientId) }
                             )
                         }
                     }
@@ -349,7 +350,7 @@ fun HomeScreen(
                             intake = comp.intake, target = comp.target,
                             coverage = comp.coverage, status = comp.status,
                             emphasize = true,
-                            onClick = { detailNutrientId = comp.nutrientId }
+                            onClick = { onOpenNutrient(comp.nutrientId) }
                         )
                     }
                     AnimatedVisibility(visible = tiersExpanded) {
@@ -359,7 +360,7 @@ fun HomeScreen(
                                     name = comp.name, tier = comp.tier, unit = comp.unit,
                                     intake = comp.intake, target = comp.target,
                                     coverage = comp.coverage, status = comp.status,
-                                    onClick = { detailNutrientId = comp.nutrientId }
+                                    onClick = { onOpenNutrient(comp.nutrientId) }
                                 )
                             }
                         }

@@ -1,15 +1,24 @@
-## Chart Time Navigation (2026-11-07)
+# ADR: Supplement peer repair + reactive Home window (2026-11-16, round 2)
 
-**Decision:** Standardized chart time-browsing across the app via a reusable module `ui/charts/ChartTimeNav.kt`:
-- `shortRangeLabel(from, to)` renders a compact "Sep 3 – Oct 3" date-range label (years appended when they differ).
-- `Modifier.chartPan(enabled, onPan)` attaches a horizontal-drag gesture (80px threshold, one trigger per gesture) mapped to pan-older/pan-newer.
-- `ChartTimeNavRow(label, canGoBack, canGoForward, onBack, onForward)` renders ‹ › icon buttons with the centered small range label.
+## Context
+Follow-ups: (1) Home Focus Now showed a stale pre-repair "2%" while the
+nutrient page showed 167% — the trailing-7d window was read with one-shot
+`.first()` inside a chain that only re-ran on the selected day's totals.
+(2) `Omega-3 Sunday Natural` (brand label, no dose) rows since 11-10 were
+attempt-capped despite an identical resolved row from 11-09 carrying
+`omega3_epa_dha: 600`.
 
-Applied to three surfaces:
-1. **Nutrient detail page** (`ui/nutrient/`): window chips now 7d/30d/90d/1y/All (rangeDays=0 means All). `loadSeries` queries full history once ("2000-01-01"→today) to derive the earliest data day; panning (step = days/2) is clamped by `maxOffset = span - days`; "All" spans earliest→today and disables panning.
-2. **Insights** (`InsightsViewModel`): added D365("1y") and ALL("All") windows; ALL's `from` = min(first score snapshot day, first ledger day via dailyTotalsForWindow full scan), fallback 364d.
-3. **History** (`HistoryViewModel`): already had 1y/All; added `_offset`/`_maxOffset` StateFlows folded into a combined `SelWin` flow driving `loadDetail(def, win, offset)`; offsets clamped per-nutrient to earliest data day; `HistoryScreen` chart card gained ChartTimeNavRow + swipeable chart.
+## Decision
+1. HomeViewModel now `combine`s `observeDailyTotals(day)` with a LIVE
+   `observeDailyTotalsRange(recentFrom, day)` — historical backfills
+   re-emit and Focus Now recomputes immediately.
+2. `NutritionProcessor.repairSupplementsFromPeers()`: unresolved/capped rows
+   whose EXACT label (or parsed name+dose) matches a resolved row clone its
+   `nutrientContributions` + `resolvedFoodId` — zero LLM. Runs at startup
+   (then ledger + snapshot recompute) and after every Tail sync before kick.
 
-**Rationale:** Users previously hit a 90-day ceiling with no way to inspect older data. Full-history single-query + offset clamping avoids re-querying per pan and guarantees pan stops exactly at the first day of recorded data. Gesture + arrows + visible range label cover intuitive, discoverable, and accessible time browsing.
-
-**Consequences:** Fixed windows (not All) pan; All view is inherently static. Panning triggers a full series recompute per step (acceptable: queries are one Room call each).
+## Consequences
+- On-device: 328 rows repaired across all brand supplements; Omega-3 ledger
+  now 1200–1800 mg/day; vitamin D 7-day avg consistent across screens.
+- New daily pills of an already-known supplement resolve the moment Tail
+  syncs them, never depending on an LLM batch completing.

@@ -18,14 +18,17 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -33,6 +36,9 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -49,13 +55,8 @@ import coil3.request.ImageRequest
 import coil3.request.crossfade
 import com.example.hoot.data.local.entity.RecommendationEntity
 import com.example.hoot.domain.insights.Grade
-import androidx.compose.foundation.layout.Box
-import com.example.hoot.ui.charts.ChartTimeNavRow
-import androidx.compose.foundation.layout.Box
 import com.example.hoot.ui.charts.ChartTimeNavRow
 import com.example.hoot.ui.charts.LineChart
-import com.example.hoot.ui.charts.chartPan
-import com.example.hoot.ui.charts.shortRangeLabel
 import com.example.hoot.ui.charts.chartPan
 import com.example.hoot.ui.charts.shortRangeLabel
 import com.example.hoot.ui.common.SectionHeader
@@ -63,6 +64,7 @@ import com.example.hoot.ui.common.TierChip
 import com.example.hoot.ui.common.foodEmoji
 import com.example.hoot.ui.common.formatNutrient
 import com.example.hoot.ui.common.percentOf
+import com.example.hoot.ui.common.prettyDay
 import com.example.hoot.ui.common.shortDayLabel
 import com.example.hoot.ui.theme.ScoreHigh
 import com.example.hoot.ui.theme.ScoreLow
@@ -81,10 +83,37 @@ import com.example.hoot.ui.theme.ScoreMid
 fun NutrientDetailScreen(
     nutrientId: String,
     onBack: () -> Unit,
+    onOpenDay: (String) -> Unit = {},
     vm: NutrientPageViewModel = viewModel()
 ) {
     LaunchedEffect(nutrientId) { vm.open(nutrientId) }
     val state by vm.state.collectAsStateWithLifecycle()
+
+    // Tapped chart day-node → popup (with a jump into that day's page).
+    var selectedPoint by remember { mutableStateOf<Int?>(null) }
+    fun clearSelection() {
+        selectedPoint = null
+        vm.dismissDayDetail()
+    }
+    state.dayDetail?.let { detail ->
+        DayNodeSheet(
+            detail = detail,
+            unit = state.def.unit,
+            target = state.target,
+            onOpenDay = {
+                clearSelection()
+                onOpenDay(detail.day)
+            },
+            onDismiss = ::clearSelection
+        )
+    }
+
+    val onPointTapped: (Int) -> Unit = { index ->
+        selectedPoint = index
+        state.series.getOrNull(index)?.let { vm.openDayDetail(it.day) }
+    }
+    // Keep the local selection in sync when the popup closes elsewhere.
+    LaunchedEffect(state.dayDetail) { if (state.dayDetail == null) selectedPoint = null }
 
     Scaffold(
         topBar = {
@@ -219,11 +248,13 @@ fun NutrientDetailScreen(
                                     axisLabels = true,
                                     xLabels = state.series.map { shortDayLabel(it.day) },
                                     yLabelFormat = { formatNutrient(it, state.def.unit) },
-                                    contentDescriptionText = "Daily ${state.def.name} intake"
+                                    contentDescriptionText = "Daily ${state.def.name} intake",
+                                    selectedPoint = selectedPoint,
+                                    onPointTap = onPointTapped
                                 )
                             }
                             Text(
-                                "Swipe the chart or use the arrows to browse through time.",
+                                "Tap a point for that day's detail · swipe or arrows to browse time.",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -434,6 +465,87 @@ fun NutrientDetailScreen(
         }
     }
 }
+
+/**
+ * Day-node popup: total + every consumed item that contributed THIS
+ * nutrient on the tapped day, plus a jump into that date's page.
+ */
+@Composable
+@OptIn(ExperimentalMaterial3Api::class)
+private fun DayNodeSheet(
+    detail: DayDetail,
+    unit: String,
+    target: Double,
+    onOpenDay: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 20.dp, end = 20.dp, bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(prettyDay(detail.day), style = MaterialTheme.typography.titleLarge)
+            if (target > 0) {
+                val pct = (detail.total / target * 100).toInt()
+                Text(
+                    "${formatNutrient(detail.total, unit)} · $pct% of target",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                Text(
+                    "${formatNutrient(detail.total, unit)} this day",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            HorizontalDivider()
+            if (detail.rows.isEmpty()) {
+                Text(
+                    "Nothing logged this day for this nutrient.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            } else {
+                detail.rows.forEach { row ->
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(if (row.isSupplement) "💊" else foodEmoji(row.name))
+                        Spacer(Modifier.width(8.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(row.name, style = MaterialTheme.typography.bodyMedium)
+                            row.timeMillis?.let {
+                                Text(
+                                    timeOfDay(it),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        Text(
+                            formatNutrient(row.amount, unit),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+            Button(onClick = onOpenDay, modifier = Modifier.fillMaxWidth()) {
+                Text("Open this day")
+            }
+        }
+    }
+}
+
+/** "13:40" from an epoch-millis log timestamp. */
+private fun timeOfDay(millis: Long): String =
+    java.time.Instant.ofEpochMilli(millis)
+        .atZone(java.time.ZoneId.systemDefault())
+        .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))
 
 /** Big letter badge + one-line situation (mirrors the report card semantics). */
 @Composable

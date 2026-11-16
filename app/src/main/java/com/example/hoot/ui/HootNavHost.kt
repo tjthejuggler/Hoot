@@ -96,6 +96,9 @@ fun HootNavHost(navController: NavHostController = rememberNavController()) {
     // One-time auto-prompt on first launch when Tail is not configured yet.
     val context = LocalContext.current
     var tailPromptChecked by remember { mutableStateOf(false) }
+    // Day chosen from a nutrient page's day-node popup ("Open this day"):
+    // consumed by the next HomeScreen composition (pendingDay parameter).
+    var pendingDaySelection by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) {
         if (!tailPromptChecked) {
             tailPromptChecked = true
@@ -164,7 +167,11 @@ fun HootNavHost(navController: NavHostController = rememberNavController()) {
                 HomeScreen(
                     onOpenHistory = { navController.navigate(HootRoute.HISTORY.name) { launchSingleTop = true } },
                     onOpenInsights = { navController.navigate(HootRoute.INSIGHTS.name) { launchSingleTop = true } },
-                    onOpenTailSetup = { navController.navigate(ROUTE_TAIL_SETUP) { launchSingleTop = true } }
+                    onOpenNutrient = { id ->
+                        navController.navigate("nutrient_detail/$id") { launchSingleTop = true }
+                    },
+                    onOpenTailSetup = { navController.navigate(ROUTE_TAIL_SETUP) { launchSingleTop = true } },
+                    pendingDay = pendingDaySelection.also { pendingDaySelection = null }
                 )
             }
             // Legacy alias: same screen as HOME, so old back-stack entries work.
@@ -172,11 +179,21 @@ fun HootNavHost(navController: NavHostController = rememberNavController()) {
                 HomeScreen(
                     onOpenHistory = { navController.navigate(HootRoute.HISTORY.name) { launchSingleTop = true } },
                     onOpenInsights = { navController.navigate(HootRoute.INSIGHTS.name) { launchSingleTop = true } },
-                    onOpenTailSetup = { navController.navigate(ROUTE_TAIL_SETUP) { launchSingleTop = true } }
+                    onOpenNutrient = { id ->
+                        navController.navigate("nutrient_detail/$id") { launchSingleTop = true }
+                    },
+                    onOpenTailSetup = { navController.navigate(ROUTE_TAIL_SETUP) { launchSingleTop = true } },
+                    pendingDay = pendingDaySelection.also { pendingDaySelection = null }
                 )
             }
             composable(HootRoute.INTAKE.name) { IntakeScreen() }
-            composable(HootRoute.HISTORY.name) { HistoryScreen() }
+            composable(HootRoute.HISTORY.name) {
+                HistoryScreen(
+                    onOpenNutrient = { id ->
+                        navController.navigate("nutrient_detail/$id") { launchSingleTop = true }
+                    }
+                )
+            }
             composable(HootRoute.INSIGHTS.name) {
                 InsightsScreen(
                     onOpenHistory = { navController.navigate(HootRoute.HISTORY.name) { launchSingleTop = true } },
@@ -191,7 +208,17 @@ fun HootNavHost(navController: NavHostController = rememberNavController()) {
             ) { entry ->
                 NutrientDetailScreen(
                     nutrientId = entry.arguments?.getString("nutrientId").orEmpty(),
-                    onBack = { navController.popBackStack() }
+                    onBack = { navController.popBackStack() },
+                    onOpenDay = { dayKey ->
+                        // Jump to Home with that date preselected (single top,
+                        // state kept) — HomeViewModel.selectDay applies it.
+                        navController.navigate(HootRoute.HOME.name) {
+                            popUpTo(navController.graph.startDestinationId) { saveState = true }
+                            launchSingleTop = true
+                            restoreState = true
+                        }
+                        pendingDaySelection = dayKey
+                    }
                 )
             }
             composable(HootRoute.SETTINGS.name) {

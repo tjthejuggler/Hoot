@@ -107,9 +107,18 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 
     val state: StateFlow<HomeUiState> = combine(_day, _refreshTick) { d, _ -> d }
         .flatMapLatest { day ->
-            graph.nutrients.observeDailyTotals(day)
-                .distinctUntilChanged()
-                .flatMapLatest { totals ->
+            // Reactive over BOTH the selected day AND the trailing-7d range:
+            // backfills that touch only HISTORICAL days (supplement
+            // self-heal, re-resolved ingredients) previously left the
+            // Focus-now 7-day average stale — today's flow never re-emitted,
+            // so Home kept a pre-repair "2%" while the nutrient page, which
+            // computes on open, showed 167% (feedback 2026-11-16).
+            val recentFrom = dayKeyMinusDays(day, (FocusNowEngine.RECENT_DAYS - 1).toLong())
+            combine(
+                graph.nutrients.observeDailyTotals(day).distinctUntilChanged(),
+                graph.nutrients.observeDailyTotalsRange(recentFrom, day).distinctUntilChanged()
+            ) { totals, rangeRows -> totals to rangeRows }
+                .flatMapLatest { (totals, rangeRows) ->
                 // Ledger changed → refresh the (idempotent) score snapshot.
                 if (totals.isNotEmpty()) {
                     runCatching { graph.scoreSnapshotter.recomputeDay(day) }
@@ -155,10 +164,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                 }
 
                 // ---- Focus now: trailing-7d average AND today gaps --------
-                val recentFrom = dayKeyMinusDays(day, (FocusNowEngine.RECENT_DAYS - 1).toLong())
-                val windowTotals = graph.nutrients
-                    .observeDailyTotalsRange(recentFrom, day).first()
-                    .groupBy { it.nutrientId }
+                val windowTotals = rangeRows.groupBy { it.nutrientId }
                 val focusInputs = comps.filter { !it.isLimitTracker }.map { comp ->
                     val series = windowTotals[comp.nutrientId].orEmpty()
                         .filter { (it.day ?: "") >= recentFrom }

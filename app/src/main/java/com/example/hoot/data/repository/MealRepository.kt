@@ -103,6 +103,17 @@ class MealRepository(
     /** Supplements still pending nutrient-contribution resolution (under the attempt cap). */
     suspend fun unresolvedSupplements(): List<SupplementEntity> = supplementDao.unresolved()
 
+    /** Attempt-capped unresolved supplements (repair-hook input). */
+    suspend fun supplementsCapped(): List<SupplementEntity> = supplementDao.capped()
+
+    /** Resolved supplements (peer-repair source rows). */
+    suspend fun resolvedSupplements(): List<SupplementEntity> = supplementDao.resolved()
+
+    /** Zero the attempt counter for specific supplement rows (repair hook). */
+    suspend fun resetAttemptsForSupplements(ids: List<String>) {
+        if (ids.isNotEmpty()) supplementDao.resetAttemptsFor(ids)
+    }
+
     suspend fun unresolvedSupplementCount(): Int = supplementDao.unresolvedCount()
 
     /** Kill-safe claim bookkeeping — see [claimIngredientAttempts]. */

@@ -4,9 +4,15 @@ import androidx.compose.animation.core.EaseOutCubic
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.rememberTextMeasurer
@@ -74,6 +80,9 @@ private fun DrawScope.gridRect(
 /**
  * Line chart with an optional dashed reference line (e.g. RDA) and optional
  * bar underlay (weekly totals). [points] are raw values; nulls create gaps.
+ * [onPointTap] (when set) makes every non-null data point tappable: the
+ * nearest point within ~28 dp receives its index — used by the nutrient
+ * page's day nodes to open the "what you consumed that day" popup.
  */
 @Composable
 fun LineChart(
@@ -89,7 +98,9 @@ fun LineChart(
     axisLabels: Boolean = false,
     xLabels: List<String> = emptyList(),
     yLabelFormat: (Double) -> String = { "%.4g".format(it) },
-    contentDescriptionText: String = "Line chart"
+    contentDescriptionText: String = "Line chart",
+    selectedPoint: Int? = null,
+    onPointTap: ((Int) -> Unit)? = null
 ) {
     val anim = animateChart(1f)
     val gridColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
@@ -106,14 +117,42 @@ fun LineChart(
     val textMeasurer = rememberTextMeasurer()
     val labelStyle = MaterialTheme.typography.labelSmall
     val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
+    var chartRect by remember { mutableStateOf<Rect?>(null) }
     Canvas(
-        modifier = modifier.semantics { contentDescription = desc }
+        modifier = modifier
+            .semantics { contentDescription = desc }
+            .then(
+                if (onPointTap != null) {
+                    Modifier.pointerInput(points) {
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            val rect = chartRect ?: return@awaitEachGesture
+                            val maxDist = 28.dp.toPx()
+                            var bestIdx = -1
+                            var bestDist = Float.MAX_VALUE
+                            points.forEachIndexed { i, v ->
+                                if (v == null) return@forEachIndexed
+                                val x = if (points.size <= 1) rect.center.x
+                                else rect.left + rect.width * i / (points.size - 1).toFloat()
+                                val y = rect.bottom - (v.coerceAtLeast(0.0) / yMax * rect.height).toFloat()
+                                val d = kotlin.math.hypot(
+                                    (down.position.x - x).toDouble(),
+                                    (down.position.y - y).toDouble()
+                                ).toFloat()
+                                if (d < bestDist) { bestDist = d; bestIdx = i }
+                            }
+                            if (bestIdx >= 0 && bestDist <= maxDist) onPointTap(bestIdx)
+                        }
+                    }
+                } else Modifier
+            )
     ) {
         val chart = gridRect(
             gridColor,
             extraLeft = if (axisLabels) 34.dp else 0.dp,
             extraBottom = if (axisLabels) 16.dp else 0.dp
         )
+        chartRect = chart
         val yToPx = { v: Double ->
             chart.bottom - (v.coerceAtLeast(0.0) / yMax * chart.height).toFloat()
         }
@@ -204,6 +243,18 @@ fun LineChart(
             pts.forEach { p ->
                 drawCircle(lineColor, radius = 3.dp.toPx(), center = p)
             }
+        }
+
+        // Selected day-node highlight: halo ring + filled core.
+        if (selectedPoint != null && selectedPoint in points.indices) {
+            val v = points[selectedPoint] ?: return@Canvas
+            val x = if (points.size <= 1) chart.center.x
+            else chart.left + chart.width * selectedPoint / (points.size - 1).toFloat()
+            drawCircle(
+                referenceColor, radius = 7.dp.toPx(), center = Offset(x, yToPx(v)),
+                style = Stroke(2.dp.toPx())
+            )
+            drawCircle(lineColor, radius = 4.dp.toPx(), center = Offset(x, yToPx(v)))
         }
 
         // X-axis tick labels: ≤5 evenly spaced (ends included).

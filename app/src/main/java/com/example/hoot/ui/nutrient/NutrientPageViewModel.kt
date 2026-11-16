@@ -22,6 +22,7 @@ import com.example.hoot.ui.common.windowDays
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 
@@ -46,6 +47,22 @@ data class UsualSourceRow(
     /** Share of all logged intake of this nutrient, 0..100. */
     val sharePct: Int,
     val isSupplement: Boolean
+)
+
+/** One consumed item behind a chart day-node (meal or supplement row). */
+data class DaySourceRow(
+    val name: String,
+    val amount: Double,
+    val isSupplement: Boolean,
+    val timeMillis: Long?
+)
+
+/** Everything the day-node popup shows for one tapped chart day. */
+data class DayDetail(
+    val day: String,
+    val total: Double,
+    /** null = nothing logged that day for this nutrient. */
+    val rows: List<DaySourceRow>
 )
 
 /** State of the full-page nutrient detail (replaces the Insights bottom sheet). */
@@ -85,7 +102,9 @@ data class NutrientPageState(
     val suggestions: List<RecommendationEntity> = emptyList(),
     val loadingMore: Boolean = false,
     val llmUnavailable: Boolean = false,
-    val error: String? = null
+    val error: String? = null,
+    /** Day-node popup content (null = closed). */
+    val dayDetail: DayDetail? = null
 ) {
     val hasTarget: Boolean get() = target > 0
 }
@@ -177,6 +196,53 @@ class NutrientPageViewModel(app: Application) : AndroidViewModel(app) {
     fun loadMore() {
         if (_state.value.loadingMore || !_state.value.hasTarget) return
         viewModelScope.launch { generateMore(initial = false) }
+    }
+
+    /**
+     * Loads the day-node popup for one chart day: every ledger row of THIS
+     * nutrient on that day (meal + supplement), resolved to display names.
+     */
+    fun openDayDetail(day: String) {
+        val s = _state.value
+        if (day.isBlank()) return
+        viewModelScope.launch {
+            val entries = graph.intakeRepo.observeIntakeByDay(day)
+                .firstOrNull().orEmpty()
+                .filter { it.nutrientId == s.nutrientId }
+            val meals = graph.meals.mealsByIds(entries.mapNotNull { it.sourceMealId })
+                .associateBy { it.id }
+            val supps = graph.meals.supplementsByIds(entries.mapNotNull { it.sourceSupplementId })
+                .associateBy { it.id }
+            val rows = entries.mapNotNull { e ->
+                when {
+                    e.sourceMealId != null -> meals[e.sourceMealId]?.let { m ->
+                        DaySourceRow(
+                            name = (m.title ?: m.rawText).trim().takeIf { it.isNotBlank() }
+                                ?: "Meal",
+                            amount = e.amount, isSupplement = false, timeMillis = m.timestamp
+                        )
+                    }
+                    e.sourceSupplementId != null -> supps[e.sourceSupplementId]?.let { sp ->
+                        DaySourceRow(
+                            name = sp.label.ifBlank { sp.rawText },
+                            amount = e.amount, isSupplement = true, timeMillis = sp.timestamp
+                        )
+                    }
+                    else -> DaySourceRow(
+                        name = "Other", amount = e.amount,
+                        isSupplement = false, timeMillis = null
+                    )
+                }
+            }.sortedByDescending { it.timeMillis ?: 0L }
+            _state.value = _state.value.copy(
+                dayDetail = DayDetail(day = day, total = rows.sumOf { it.amount }, rows = rows)
+            )
+        }
+    }
+
+    /** Closes the day-node popup. */
+    fun dismissDayDetail() {
+        _state.value = _state.value.copy(dayDetail = null)
     }
 
     // ---- Internals ---------------------------------------------------------

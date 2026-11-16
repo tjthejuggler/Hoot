@@ -145,6 +145,27 @@ interface SupplementDao {
     )
     suspend fun unresolved(): List<SupplementEntity>
 
+    /**
+     * Attempt-capped unresolved rows (the ones the auto-retry queue excludes)
+     * for the one-time abbreviation-repair sweep (2026-11-16).
+     */
+    @Query(
+        "SELECT * FROM supplements WHERE nutrientContributions = '[]' " +
+            "AND resolvedFoodId IS NULL AND resolveAttempts >= 3"
+    )
+    suspend fun capped(): List<SupplementEntity>
+
+    /** Resolved rows (peer-repair source: same label ⇒ same per-serving panel). */
+    @Query(
+        "SELECT * FROM supplements WHERE nutrientContributions != '[]' " +
+            "AND resolvedFoodId IS NOT NULL"
+    )
+    suspend fun resolved(): List<SupplementEntity>
+
+    /** Zero the attempt counter for specific rows (repair hook). */
+    @Query("UPDATE supplements SET resolveAttempts = 0 WHERE id IN (:ids)")
+    suspend fun resetAttemptsFor(ids: List<String>)
+
     /** Currently-processing count for the Today chip (same filter as [unresolved]). */
     @Query(
         "SELECT COUNT(*) FROM supplements WHERE nutrientContributions = '[]' " +
