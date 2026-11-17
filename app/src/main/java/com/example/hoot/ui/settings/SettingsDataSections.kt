@@ -150,6 +150,38 @@ internal fun SyncPrefsSection(
     }
 }
 
+// ── Knowledge pack section ────────────────────────────────────────────────────
+
+/**
+ * Knowledge-pack export/import (feedback 2026-11-17): share ALL amassed
+ * nutrition knowledge — nutrient definitions, researched food panels and
+ * symptom associations — with zero personal data. Import seeds another
+ * install with everything gathered here.
+ */
+@Composable
+internal fun KnowledgePackSection(
+    onExport: () -> Unit,
+    onImport: () -> Unit
+) {
+    SectionCard(
+        title = "Knowledge pack",
+        subtitle = "share your nutrition research — no personal data"
+    ) {
+        Text(
+            "Exports every nutrient definition, researched food panel and symptom " +
+                "link this Hoot has amassed. Meals, supplements and history stay on " +
+                "this device — the file only carries the knowledge.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Button(onClick = onExport) { Text("Export knowledge") }
+            OutlinedButton(onClick = onImport) { Text("Import pack") }
+        }
+    }
+}
+
 // ── Data & cache section ─────────────────────────────────────────────────────
 
 /**

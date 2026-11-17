@@ -305,7 +305,14 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
             // until then the user sees yesterday's-real data instead of a
             // spinner that, during startup self-heal ledger churn, could
             // spin for a very long time with nothing on screen.
-            HomeStateCache.load(getApplication())?.let { emit(it) }
+            // DAY GUARD (bug 2026-11-17 "11 g protein with nothing eaten"):
+            // a cache written YESTERDAY carries yesterday's totals — without
+            // this guard they render as if they were today's until the live
+            // pass swaps them in. Only a TODAY cache may surface instantly;
+            // any older cache is skipped (plain loading state instead).
+            HomeStateCache.load(getApplication())
+                ?.takeIf { it.day == today }
+                ?.let { emit(it) }
         }
         .onEach { state ->
             // Persist only LIVE results (a cached emission would just

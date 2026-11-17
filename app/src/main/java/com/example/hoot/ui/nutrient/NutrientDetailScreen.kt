@@ -18,6 +18,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
@@ -32,6 +33,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -57,6 +59,7 @@ import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
 import coil3.request.crossfade
 import com.example.hoot.data.local.entity.RecommendationEntity
+import com.example.hoot.data.local.SymptomSeed
 import com.example.hoot.domain.insights.Grade
 import com.example.hoot.domain.insights.NutrientResearcher
 import com.example.hoot.ui.charts.ChartTimeNavRow
@@ -404,6 +407,41 @@ fun NutrientDetailScreen(
                 }
             }
 
+            // ---- Food ↔ nutrient association management (2026-11-17) ---------
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp)) {
+                        SectionHeader(
+                            "Food sources for ${state.def.name}",
+                            "Foods your knowledge base links to this nutrient — remove " +
+                                "mistakes or add your own."
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        if (state.foodAssociations.isEmpty()) {
+                            Text(
+                                "No linked foods yet — add one below or run research.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        } else {
+                            FoodAssocList(
+                                rows = state.foodAssociations,
+                                unit = state.def.unit,
+                                onRemove = { row ->
+                                    vm.removeFoodAssociation(row.normalizedName, row.displayName)
+                                }
+                            )
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        AddAssociationRow(
+                            hint = "Add food (e.g. Pumpkin seeds, 8.5)",
+                            addLabel = "Add",
+                            onAdd = vm::addFoodAssociation
+                        )
+                    }
+                }
+            }
+
             // ---- Suggestions feed (LLM, same engine as before) ------------------
             item {
                 SectionHeader(
@@ -458,13 +496,14 @@ fun NutrientDetailScreen(
                 }
             }
 
-            // ---- Symptoms (deficiency system) -----------------------------------
+            // ---- Symptoms (deficiency system, editable 2026-11-17) -----------
             item {
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp)) {
                         SectionHeader(
                             "Symptoms",
-                            "What too little — and too much — of ${state.def.name} can look like."
+                            "What too little — and too much — of ${state.def.name} can look like. " +
+                                "Tap ✕ to remove a wrong link; add your own below."
                         )
                         Spacer(Modifier.height(8.dp))
                         Text("If you're too low", style = MaterialTheme.typography.titleSmall)
@@ -476,15 +515,26 @@ fun NutrientDetailScreen(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         } else {
-                            SymptomChipFlow(state.deficiencySymptoms)
+                            SymptomChipFlow(
+                                state.deficiencySymptoms,
+                                onRemove = { key -> vm.removeSymptom(key, "DEFICIENCY") }
+                            )
                         }
                         if (state.excessSymptoms.isNotEmpty()) {
                             Spacer(Modifier.height(12.dp))
                             Text("If you consistently overshoot", style = MaterialTheme.typography.titleSmall)
                             Spacer(Modifier.height(6.dp))
-                            SymptomChipFlow(state.excessSymptoms)
+                            SymptomChipFlow(
+                                state.excessSymptoms,
+                                onRemove = { key -> vm.removeSymptom(key, "EXCESS") }
+                            )
                         }
                         Spacer(Modifier.height(12.dp))
+                        AddAssociationRow(
+                            hint = "Add symptom (e.g. Night cramps)",
+                            addLabel = "Add",
+                            onAdd = { label -> vm.addSymptom(label, SymptomSeed.KIND_DEFICIENCY) }
+                        )
                     }
                 }
             }
@@ -620,9 +670,10 @@ fun NutrientDetailScreen(
  * soft break) and the percentage sits inline when it fits; when space runs
  * out the whole row wraps so digits never stack (feedback 2026-11-16). The
  * 🔬 researched marker is dropped from labels (emoji clutter feedback).
+ * ✕ removes a wrong link (association management, 2026-11-17).
  */
 @Composable
-private fun SymptomChipFlow(rows: List<SymptomRow>) {
+private fun SymptomChipFlow(rows: List<SymptomRow>, onRemove: (String) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         rows.forEach { s ->
             Row(verticalAlignment = Alignment.Top) {
@@ -652,8 +703,96 @@ private fun SymptomChipFlow(rows: List<SymptomRow>) {
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                Spacer(Modifier.width(4.dp))
+                IconButton(
+                    onClick = { onRemove(s.key) },
+                    modifier = Modifier.size(24.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.Close,
+                        contentDescription = "Remove ${s.display}",
+                        modifier = Modifier.size(14.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
+    }
+}
+
+/**
+ * Linked-food rows for the association card (2026-11-17): name, per-100 g
+ * value of THIS nutrient when known, and a ✕ remove. Rows come from the
+ * knowledge base's high-in index.
+ */
+@Composable
+private fun FoodAssocList(
+    rows: List<FoodAssocRow>,
+    unit: String,
+    onRemove: (FoodAssocRow) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        rows.forEach { row ->
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    row.displayName,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1, overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    row.per100?.let { "${formatNutrient(it, unit)} $unit / 100 g" } ?: "linked",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                IconButton(
+                    onClick = { onRemove(row) },
+                    modifier = Modifier.size(24.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.Close,
+                        contentDescription = "Remove ${row.displayName}",
+                        modifier = Modifier.size(14.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Text field + Add button used by BOTH association editors (symptom label,
+ * "Food, value"). Blank input is ignored.
+ */
+@Composable
+private fun AddAssociationRow(
+    hint: String,
+    addLabel: String,
+    onAdd: (String) -> Unit
+) {
+    var text by remember { mutableStateOf("") }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        OutlinedTextField(
+            value = text,
+            onValueChange = { text = it },
+            modifier = Modifier.weight(1f),
+            singleLine = true,
+            placeholder = { Text(hint) },
+            textStyle = MaterialTheme.typography.bodySmall
+        )
+        Spacer(Modifier.width(8.dp))
+        TextButton(
+            onClick = {
+                if (text.isNotBlank()) {
+                    onAdd(text.trim())
+                    text = ""
+                }
+            }
+        ) { Text(addLabel) }
     }
 }
 

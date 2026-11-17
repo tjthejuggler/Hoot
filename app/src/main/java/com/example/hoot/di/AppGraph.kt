@@ -243,9 +243,21 @@ class AppGraph(context: Context) {
 
     /**
      * Nutrient ↔ symptom associations (deficiency system, 2026-11-16):
-     * curated seed + research rows backing the likelihood engines.
+     * curated seed + research rows backing the likelihood engines. Also the
+     * manual add/remove surface (feedback 2026-11-17).
      */
     val symptomAssociations = NutrientSymptomRepository(database.nutrientSymptomDao())
+
+    /**
+     * Knowledge-pack export/import (feedback 2026-11-17): share the amassed
+     * nutrition knowledge (definitions + food panels + symptom links) with
+     * another install — zero personal data in the file.
+     */
+    val knowledgePacks = com.example.hoot.data.backup.KnowledgePackManager(
+        definitions = nutrientDefinitions,
+        symptoms = symptomAssociations,
+        knowledge = foodKnowledge
+    )
 
     /**
      * Per-nutrient research agent (deficiency system): one LLM call carrying

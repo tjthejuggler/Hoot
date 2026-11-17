@@ -334,6 +334,24 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * Knowledge-pack export (feedback 2026-11-17): nutrient definitions +
+     * researched foods + symptom associations — ZERO personal data, safe to
+     * share. Null on unexpected failure — the UI shows a snackbar.
+     */
+    suspend fun exportKnowledgePack(): String? = withContext(Dispatchers.IO) {
+        graph.knowledgePacks.exportJson()
+    }
+
+    /**
+     * Knowledge-pack import (feedback 2026-11-17): applies a pack produced by
+     * [exportKnowledgePack] on any install. Returns a summary for the
+     * snackbar, or null when the text is not a knowledge pack.
+     */
+    suspend fun importKnowledgePack(text: String): String? = withContext(Dispatchers.IO) {
+        graph.knowledgePacks.importJson(text)?.summary()
+    }
+
+    /**
      * Builds the JSON export (meals + ingredients + supplements + per-day
      * intake totals). Null on unexpected failure — the UI shows a toast.
      */

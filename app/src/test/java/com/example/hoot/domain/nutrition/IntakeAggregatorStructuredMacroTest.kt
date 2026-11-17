@@ -2,6 +2,7 @@ package com.example.hoot.domain.nutrition
 
 import com.example.hoot.data.local.entity.MealEntity
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -60,5 +61,20 @@ class IntakeAggregatorStructuredMacroTest {
         // Canonical units missing a key (e.g. fresh DB before seed) must not throw.
         val rows = IntakeAggregator.structuredMacroRows(meal(protein = 10.0), "d", emptySet(), emptyMap())
         assertTrue(rows.isEmpty())
+    }
+
+    @Test
+    fun `supplement panels never credit energy macros`() {
+        // Bug 2026-11-17 ("11 g protein today" with nothing eaten): the
+        // collagen/glutamine panel's protein key must be skipped exactly
+        // like calories — pills contribute micronutrients only.
+        val skip = IntakeAggregator.SUPPLEMENT_MACRO_SKIP
+        assertTrue("calories" in skip)
+        assertTrue("protein" in skip)
+        assertTrue("carbohydrates" in skip)
+        assertTrue("total_fat" in skip)
+        // Micronutrients stay eligible.
+        assertFalse("iron" in skip)
+        assertFalse("vitamin_d" in skip)
     }
 }

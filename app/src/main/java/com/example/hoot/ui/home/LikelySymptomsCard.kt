@@ -23,6 +23,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.hoot.domain.insights.SymptomMatcher
+import com.example.hoot.ui.common.SUBSECTION_SCROLL_HEIGHT
 import com.example.hoot.ui.common.killParentFling
 
 /**
@@ -31,8 +32,6 @@ import com.example.hoot.ui.common.killParentFling
  * intake coverage (DeficiencyModel) × nutrient-symptom associations
  * (SymptomMatcher). Multi-cause symptoms outrank single-nutrient ones.
  */
-/** Fixed height of the scrollable symptom list inside the section. */
-private val SYMPTOM_LIST_HEIGHT = 300.dp
 
 @Composable
 fun LikelySymptomsCard(
@@ -61,7 +60,7 @@ fun LikelySymptomsCard(
         LazyColumn(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(SYMPTOM_LIST_HEIGHT)
+                .height(SUBSECTION_SCROLL_HEIGHT)
                 // Fling dies at the section edge — leftover momentum never
                 // chains to the dashboard list (feedback 2026-11-17).
                 .killParentFling(),

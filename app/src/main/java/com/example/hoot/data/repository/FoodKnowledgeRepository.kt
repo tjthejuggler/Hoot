@@ -105,6 +105,105 @@ class FoodKnowledgeRepository(private val dao: FoodKnowledgeDao) {
 
     suspend fun clearAll() = dao.clearAll()
 
+    /**
+     * Manual food ↔ nutrient association edit (feedback 2026-11-17): removes
+     * [nutrientId] from a food's high-in list AND zeroes its value in the
+     * panel — a mistaken research row stops recommending the food for that
+     * nutrient on every surface that reads the knowledge base.
+     */
+    suspend fun removeNutrientAssociation(normalizedName: String, nutrientId: String) {
+        val row = dao.byName(normalizedName) ?: return
+        val highIn = FoodKnowledgeIndex.fromJson(row.highInJson) - nutrientId
+        val values = FoodKnowledgeIndex.valuesFromJson(row.valuesJson) - nutrientId
+        dao.upsert(
+            row.copy(
+                highInJson = FoodKnowledgeIndex.toJson(highIn),
+                valuesJson = FoodKnowledgeIndex.valuesToJson(values)
+            )
+        )
+    }
+
+    /**
+     * Manual food ↔ nutrient association add (feedback 2026-11-17): marks a
+     * food as high-in [nutrientId] and records (or overwrites) its per-100 g
+     * value in the panel. Creating the row when the food is unknown —
+     * manual entries are exactly how a user seeds foods the pipeline never
+     * researched. Resolution method "manual" keeps refreshes from clobbering.
+     */
+    suspend fun addNutrientAssociation(
+        normalizedName: String,
+        displayName: String,
+        nutrientId: String,
+        per100g: Double
+    ) {
+        // per100g <= 0 = tag-only (mark high-in without a panel value); only
+        // a BLANK food/nutrient is rejected.
+        if (normalizedName.isBlank() || nutrientId.isBlank()) return
+        val existing = dao.byName(normalizedName)
+        if (existing != null) {
+            val base = FoodKnowledgeIndex.valuesFromJson(existing.valuesJson)
+            val values = if (per100g > 0.0) base + (nutrientId to per100g) else base
+            val highIn = FoodKnowledgeIndex.fromJson(existing.highInJson) + nutrientId
+            dao.upsert(
+                existing.copy(
+                    valuesJson = FoodKnowledgeIndex.valuesToJson(values),
+                    highInJson = FoodKnowledgeIndex.toJson(highIn)
+                )
+            )
+        } else {
+            val now = System.currentTimeMillis()
+            dao.upsert(
+                FoodKnowledgeEntity(
+                    id = java.util.UUID.randomUUID().toString(),
+                    normalizedName = normalizedName,
+                    displayName = displayName.ifBlank { normalizedName },
+                    valuesJson = if (per100g > 0.0) {
+                        FoodKnowledgeIndex.valuesToJson(mapOf(nutrientId to per100g))
+                    } else "{}",
+                    highInJson = FoodKnowledgeIndex.toJson(listOf(nutrientId)),
+                    confidence = 1.0,
+                    resolutionMethod = "manual",
+                    sourceUrlsJson = "[]",
+                    researchedForJson = "[]",
+                    firstResearchedAt = now,
+                    lastResearchedAt = now,
+                    researchCount = 1
+                )
+            )
+        }
+    }
+
+    /**
+     * Knowledge-pack IMPORT (feedback 2026-11-17): merge-imports foods from
+     * another install's export. Existing rows win on conflict for their own
+     * panel (the local user may have hand-edited), but high-in knowledge
+     * MERGES (union) — imported facts are additive. Returns rows written.
+     */
+    suspend fun importPack(pack: List<FoodKnowledgeEntity>): Int {
+        var written = 0
+        for (row in pack) {
+            val existing = dao.byName(row.normalizedName)
+            if (existing == null) {
+                dao.upsert(row.copy(id = java.util.UUID.randomUUID().toString()))
+                written++
+            } else {
+                val mergedHighIn = FoodKnowledgeIndex.fromJson(existing.highInJson) +
+                    FoodKnowledgeIndex.fromJson(row.highInJson)
+                dao.upsert(
+                    existing.copy(
+                        highInJson = FoodKnowledgeIndex.toJson(mergedHighIn.distinct()),
+                        sourceUrlsJson = mergeUrls(
+                            existing.sourceUrlsJson,
+                            FoodKnowledgeIndex.fromJson(row.sourceUrlsJson)
+                        )
+                    )
+                )
+                written++
+            }
+        }
+        return written
+    }
+
     /** Re-derives high-in for every row against CURRENT targets (goals edit). */
     suspend fun reindexAll(dailyTarget: Map<String, Double>) {
         for (row in dao.all()) {

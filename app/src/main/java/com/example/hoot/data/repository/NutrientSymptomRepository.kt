@@ -15,6 +15,15 @@ class NutrientSymptomRepository(
 ) {
     suspend fun all(): List<NutrientSymptomEntity> = dao.all()
 
+    /**
+     * Knowledge-pack import (feedback 2026-11-17): id-keyed upsert of
+     * another install's associations. Deterministic ids make re-importing
+     * the same pack converge (idempotent).
+     */
+    suspend fun importAssociations(rows: List<NutrientSymptomEntity>) {
+        if (rows.isNotEmpty()) dao.upsertAll(rows)
+    }
+
     suspend fun forNutrient(nutrientId: String): List<NutrientSymptomEntity> =
         dao.forNutrient(nutrientId)
 
@@ -29,6 +38,53 @@ class NutrientSymptomRepository(
         rows.firstOrNull()?.nutrientId?.let { dao.clearResearchFor(it) }
         if (rows.isNotEmpty()) dao.upsertAll(rows)
     }
+
+    /**
+     * Manual association management (feedback 2026-11-17): removes ONE
+     * nutrient ↔ symptom link (mistaken research row or wrong seed entry).
+     * The row is deleted by its deterministic id; missing id is a no-op.
+     */
+    suspend fun removeAssociation(nutrientId: String, symptomKey: String, kind: String) {
+        dao.deleteById("$nutrientId:$kind:$symptomKey")
+    }
+
+    /**
+     * Manual association add (feedback 2026-11-17): upserts ONE link with
+     * source="MANUAL". Matches an existing catalog symptom by display name
+     * first (groups instead of forking a near-duplicate key), else derives a
+     * snake_case key with the same rule as the research parser. Returns the
+     * persisted row (null when the label was blank).
+     */
+    suspend fun addAssociation(
+        nutrientId: String,
+        symptomLabel: String,
+        kind: String,
+        confidence: Double = 0.7
+    ): NutrientSymptomEntity? {
+        val display = symptomLabel.trim()
+        if (display.isEmpty() || nutrientId.isBlank()) return null
+        val known = dao.all()
+        val key = known.firstOrNull { it.displayName.equals(display, ignoreCase = true) }
+            ?.symptomKey
+            ?: normalizeSymptomKey(display)
+        val row = NutrientSymptomEntity(
+            id = "$nutrientId:$kind:$key",
+            nutrientId = nutrientId,
+            symptomKey = key,
+            displayName = display.replaceFirstChar { it.uppercase() },
+            kind = kind,
+            confidence = confidence.coerceIn(0.05, 1.0),
+            source = "MANUAL",
+            researchedAt = null
+        )
+        dao.upsertAll(listOf(row))
+        return row
+    }
+
+    /** snake_case key from a free-text label (same rule as NutrientResearcher). */
+    private fun normalizeSymptomKey(label: String): String = label.trim().lowercase()
+        .replace(' ', '_')
+        .replace(Regex("[^a-z0-9_]"), "")
 
     /**
      * Seeds the curated associations when the table is empty — covers v7→v8

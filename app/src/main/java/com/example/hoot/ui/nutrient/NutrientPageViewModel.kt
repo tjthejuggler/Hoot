@@ -67,6 +67,14 @@ data class DayDetail(
     val rows: List<DaySourceRow>
 )
 
+/** One food ↔ nutrient association row (manual management, 2026-11-17). */
+data class FoodAssocRow(
+    val normalizedName: String,
+    val displayName: String,
+    /** per-100 g value of THIS nutrient (null when only high-in is tagged). */
+    val per100: Double?
+)
+
 /** State of the full-page nutrient detail (replaces the Insights bottom sheet). */
 data class NutrientPageState(
     val nutrientId: String = "",
@@ -117,7 +125,11 @@ data class NutrientPageState(
     /** Scope dropdown selection (guides the research agent). */
     val researchScope: NutrientResearcher.Scope = NutrientResearcher.Scope.SYMPTOMS_AND_FOODS,
     /** Structured result of the last pass (drives the "just added" popup). */
-    val lastResearch: NutrientResearcher.Outcome? = null
+    val lastResearch: NutrientResearcher.Outcome? = null,
+    /** Foods associated with this nutrient (manual management, 2026-11-17). */
+    val foodAssociations: List<FoodAssocRow> = emptyList(),
+    /** Feedback message for association edits (null = none). */
+    val assocMessage: String? = null
 ) {
     val hasTarget: Boolean get() = target > 0
 }
@@ -130,6 +142,7 @@ data class SymptomRow(
     /** true when the research agent added this row. */
     val researched: Boolean
 )
+
 
 /**
  * Drives the full-screen nutrient detail page ([NutrientDetailScreen]):
@@ -186,6 +199,7 @@ class NutrientPageViewModel(app: Application) : AndroidViewModel(app) {
             loadSeries()
             loadSourcesAndIdeas(filter)
             loadSymptoms()
+            loadFoodAssociations()
             generateMore(initial = true)
         }
     }
@@ -217,6 +231,7 @@ class NutrientPageViewModel(app: Application) : AndroidViewModel(app) {
             }
             loadSymptoms()
             loadSourcesAndIdeas(mergedDietFilter())
+            loadFoodAssociations()
         }
     }
 
@@ -228,6 +243,99 @@ class NutrientPageViewModel(app: Application) : AndroidViewModel(app) {
     /** Close the "just added" popup. */
     fun dismissResearchResult() {
         _state.value = _state.value.copy(lastResearch = null)
+    }
+
+    // ---- Manual association management (feedback 2026-11-17) ---------------
+
+    /** Removes one symptom link from this nutrient. */
+    fun removeSymptom(key: String, kind: String) {
+        val s = _state.value
+        viewModelScope.launch {
+            runCatching { graph.symptomAssociations.removeAssociation(s.nutrientId, key, kind) }
+            _state.value = _state.value.copy(
+                assocMessage = "Removed “${s.def.name}” link"
+            )
+            loadSymptoms()
+            graph.researchEvents.emit(s.nutrientId)
+        }
+    }
+
+    /** Adds a symptom link by free-text label (DEFICIENCY or EXCESS kind). */
+    fun addSymptom(label: String, kind: String) {
+        val s = _state.value
+        viewModelScope.launch {
+            val row = runCatching {
+                graph.symptomAssociations.addAssociation(s.nutrientId, label, kind)
+            }.getOrNull()
+            _state.value = _state.value.copy(
+                assocMessage = if (row != null) "Added “${row.displayName}”" else "Enter a symptom name"
+            )
+            loadSymptoms()
+            if (row != null) graph.researchEvents.emit(s.nutrientId)
+        }
+    }
+
+    /** Removes the food ↔ nutrient association (knowledge-base row). */
+    fun removeFoodAssociation(normalizedName: String, displayName: String) {
+        val s = _state.value
+        viewModelScope.launch {
+            runCatching {
+                graph.foodKnowledge.removeNutrientAssociation(normalizedName, s.nutrientId)
+            }
+            _state.value = _state.value.copy(
+                assocMessage = "Removed $displayName from ${s.def.name} sources"
+            )
+            loadFoodAssociations()
+        }
+    }
+
+    /**
+     * Adds/creates a food ↔ nutrient association: "Name, 12.5" or just
+     * "Name" (tag-only). Creates the knowledge row when the food is unknown.
+     */
+    fun addFoodAssociation(input: String) {
+        val s = _state.value
+        val trimmed = input.trim()
+        if (trimmed.isEmpty()) {
+            _state.value = _state.value.copy(assocMessage = "Enter a food name")
+            return
+        }
+        viewModelScope.launch {
+            val name = trimmed.substringBeforeLast(',').trim().ifEmpty { trimmed }
+            val value = trimmed.substringAfterLast(',', "").trim()
+                .replace(',', '.')   // harmless when no comma was present
+                .toDoubleOrNull()
+            runCatching {
+                graph.foodKnowledge.addNutrientAssociation(
+                    normalizedName = com.example.hoot.domain.nutrition.FoodNormalizer.normalize(name),
+                    displayName = name.replaceFirstChar { it.uppercase() },
+                    nutrientId = s.nutrientId,
+                    per100g = value ?: -1.0   // negative = tag-only, no panel value
+                )
+            }
+            _state.value = _state.value.copy(
+                assocMessage = "Added $name to ${s.def.name} sources"
+            )
+            loadFoodAssociations()
+        }
+    }
+
+    /** Loads the knowledge-base foods associated with this nutrient. */
+    private suspend fun loadFoodAssociations() {
+        val s = _state.value
+        val rows = runCatching { graph.foodKnowledge.all() }.getOrDefault(emptyList())
+            .filter { s.nutrientId in FoodKnowledgeIndex.fromJson(it.highInJson) }
+            .sortedByDescending {
+                FoodKnowledgeIndex.valuesFromJson(it.valuesJson)[s.nutrientId] ?: 0.0
+            }
+            .map { row ->
+                FoodAssocRow(
+                    normalizedName = row.normalizedName,
+                    displayName = row.displayName,
+                    per100 = FoodKnowledgeIndex.valuesFromJson(row.valuesJson)[s.nutrientId]
+                )
+            }
+        _state.value = _state.value.copy(foodAssociations = rows)
     }
 
     private suspend fun loadSymptoms() {

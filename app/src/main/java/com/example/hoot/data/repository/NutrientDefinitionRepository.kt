@@ -25,6 +25,10 @@ class NutrientDefinitionRepository(
     suspend fun definitionsByIds(ids: List<String>): List<NutrientDefinitionEntity> =
         nutrientDao.byIds(ids)
 
+    /** Knowledge-pack import (2026-11-17): id-keyed upsert, idempotent. */
+    suspend fun upsertDefinitions(defs: List<NutrientDefinitionEntity>) =
+        nutrientDao.upsertAll(defs)
+
     suspend fun definitionCount(): Int = nutrientDao.count()
 
     // ---- Goals ---------------------------------------------------------

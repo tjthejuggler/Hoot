@@ -1,7 +1,6 @@
 package com.example.hoot.ui.home
 
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -109,42 +108,6 @@ internal fun ScoreCard(state: HomeUiState, onOpenInsights: () -> Unit, onExplain
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-internal fun CaloriesCard(state: HomeUiState) {
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp)) {
-            SectionHeader("Energy & macros", "Quick stats for today.")
-            Spacer(Modifier.height(8.dp))
-            state.calories?.let { (kcal, unit) ->
-                Text(
-                    "${formatNutrient(kcal, unit)} today",
-                    style = MaterialTheme.typography.headlineSmall,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Spacer(Modifier.height(8.dp))
-            } ?: Text(
-                "No calories logged yet.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                state.macros.forEach { m ->
-                    Column {
-                        Text(
-                            formatNutrient(m.intake, m.unit),
-                            style = MaterialTheme.typography.titleSmall
-                        )
-                        Text(
-                            m.name, style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
                 }
             }
         }

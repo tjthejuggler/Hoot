@@ -125,6 +125,9 @@ interface NutrientSymptomDao {
     @Upsert
     suspend fun upsertAll(rows: List<NutrientSymptomEntity>)
 
+    @Query("DELETE FROM nutrient_symptom WHERE id = :id")
+    suspend fun deleteById(id: String)
+
     @Query("DELETE FROM nutrient_symptom WHERE nutrientId = :nutrientId AND source = 'RESEARCH'")
     suspend fun clearResearchFor(nutrientId: String)
 

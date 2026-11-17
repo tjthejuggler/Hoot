@@ -1,17 +1,17 @@
-# ADR addendum: bulk symptoms backfill (2026-11-17, feedback round 3)
-
-**Status:** accepted
+# ADR: Knowledge Pack sharing + supplement macro exclusion (2026-11-17)
 
 ## Context
-The per-nutrient Research button (NutrientResearcher, Scope.SYMPTOMS) had to be tapped manually on every nutrient page to extend symptom coverage. The user wanted a one-tap bulk pass over every nutrient that has never been researched / has no symptom associations yet.
+User feedback (2026-11-17): (a) Home scrollable subsections had inconsistent heights; (b) "Today's nutrients" used an expand button for Tier 2/3; (c) Home showed "11 g protein" on a day with no food eaten; (d) the "Energy & macros" card duplicated the Consumed card; (e) no way to share amassed nutrition knowledge or fix wrong associations.
 
-## Decision
-1. Target criterion: nutrients with ZERO rows in `nutrient_symptom` (new DAO query `nutrientIdsWithSymptoms`, exposed via `NutrientSymptomRepository`). Nutrients that already have seed or research associations are skipped — they already have symptoms listed.
-2. `NutrientResearcher.researchAllMissingSymptoms()`: sequential per-nutrient `research(id, Scope.SYMPTOMS)` passes (SYMPTOMS scope = the LLM prompt asks only for deficiency/excess symptom associations, no foods). One LLM call per nutrient, rate-limit friendly; per-nutrient failures never stop the run; aborts early if the LLM is unconfigured. Progress surfaced via callback (`BulkProgress(done, total, added, current)`).
-3. Driver in HomeViewModel: `symptomBackfill` (StateFlow<BulkProgress?>, final result retained for the outcome message) + `symptomBackfillRunning` flag; completion bumps `_researchTick` so the Likely-symptoms ranking re-computes from fresh associations.
-4. UI: "Research symptoms for all nutrients" TextButton on the LikelySymptomsCard header (card is now always rendered, not gated on symptoms being non-empty, since with no associations is exactly when the button is most needed). During the run it shows live "done/total — current nutrient name" progress; after, either "N associations added" or "nothing new found".
+## Decisions
+1. **Uniform subsection height**: single shared constant `SUBSECTION_SCROLL_HEIGHT = 300.dp` in `ui/common/HootUi.kt`, used by Likely symptoms, Focus now, and Today's nutrients inner scroll areas. The old `FOCUS_NOW_MAX_HEIGHT` (460.dp) was removed — symptoms-section height is the canonical one.
+2. **Today's nutrients**: one continuous scrollable list (tier1 + otherTiers), no expand button; tier ordering preserved, Tier-1 rows still emphasized.
+3. **Protein bug (root cause)**: `IntakeAggregator` credited supplement-panel macros to the day ledger — only `calories` was skipped, so a collagen-style pill (~11 g protein) showed as eaten protein. Fix: `SUPPLEMENT_MACRO_SKIP = {calories, protein, carbohydrates, total_fat}` — supplements contribute MICRONUTRIENTS ONLY to the ledger. Energy/macros reflect FOOD (meals/structured macros). The startup ledger self-heal (`NutritionPipeline`) recomputes all days on launch, so the fix propagates without reinstall. Secondary hardening: Home's cached state emission is now day-guarded (`it.day == today`) so a yesterday cache never renders as today.
+4. **Energy & macros card deleted** (`CaloriesCard` removed from HomeCards.kt); Consumed-so-far card at top is the single energy/macros surface.
+5. **Knowledge pack**: new `data/backup/KnowledgePackCodec` (pure JVM, org.json, kind="hoot-knowledge-pack") + `KnowledgePackManager` wired in AppGraph as `knowledgePacks`. Exports nutrient definitions + nutrient↔symptom associations + food-knowledge base. ZERO personal data (no meals/supplements/ledger/scores/goals/profile). Import: definitions+symptoms upsert id-keyed (idempotent), foods merge (local panel wins, high-in unions). UI: Settings → Knowledge pack (share-sheet export, SAF file-picker import). Food ids are per-install — NOT exported; import assigns fresh UUIDs.
+6. **Manual association management**: nutrient detail page got a "Food sources for X" card (remove ✕ per linked food; add via "Name, value" free text, creates knowledge rows with resolutionMethod="manual") and the Symptoms card became editable (✕ removes seed/research/manual rows; free-text add with display-name-first key matching, falling back to the researcher's snake_case normalization). New rows use source="MANUAL".
 
 ## Consequences
-- Re-running the backfill after a completed pass is a cheap no-op unless new nutrients appeared (all existing ones now have rows).
-- Canonicalization still applies per pass (`canonicalizeKeys` runs inside each `research` call), keeping symptom keys grouped.
-- Full unit suite green (44 classes, 0 failures); deployed to SM-S918U1.
+- "Protein from meal-replacement shakes still counts" (old behavior) is intentionally REVERSED: pill protein no longer reaches the energy/macro figures at all; a true meal-replacement shake logged as a meal counts via meal paths.
+- Export/import round-trip is unit-pinned (`KnowledgePackCodecTest`); the skip set is pinned in `IntakeAggregatorStructuredMacroTest`.
+- Room schema unchanged (no migration needed — deleteById existed? no: added `NutrientSymptomDao.deleteById`, a query-only addition, no schema impact).

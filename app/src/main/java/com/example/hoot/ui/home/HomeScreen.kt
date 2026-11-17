@@ -1,6 +1,5 @@
 package com.example.hoot.ui.home
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
@@ -14,7 +13,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -23,7 +21,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Call
-import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
@@ -65,6 +62,7 @@ import com.example.hoot.ui.charts.Sparkline
 import com.example.hoot.ui.charts.scoreColor
 import com.example.hoot.ui.common.EmptyState
 import com.example.hoot.ui.common.NutrientProgressRow
+import com.example.hoot.ui.common.SUBSECTION_SCROLL_HEIGHT
 import com.example.hoot.ui.common.ScoreExplainerSheet
 import com.example.hoot.ui.common.SectionHeader
 import com.example.hoot.ui.common.TierChip
@@ -78,13 +76,6 @@ import com.example.hoot.ui.tail.TailSyncBanner
 import com.example.hoot.ui.theme.ScoreHigh
 import com.example.hoot.ui.theme.ScoreLow
 import com.example.hoot.ui.theme.ScoreMid
-
-/**
- * Max height of the Focus-now card's inner scroll area. Sized to keep the
- * section's visual footprint close to the old ~6-row card (feedback
- * 2026-11-17): taller lists scroll INSIDE the card instead of growing it.
- */
-internal val FOCUS_NOW_MAX_HEIGHT = 460.dp
 
 /**
   * Home (start destination, overhaul feedback #4): hybrid "what should I eat
@@ -117,7 +108,6 @@ fun HomeScreen(
     val nutritionState by context.appGraph.nutritionProcessor.state.collectAsStateWithLifecycle()
 
     var showScoreExplainer by remember { mutableStateOf(false) }
-    var tiersExpanded by remember { mutableStateOf(false) }
     var smartPickDetail by remember { mutableStateOf<com.example.hoot.domain.insights.SmartFoodPick?>(null) }
     var showDatePicker by remember { mutableStateOf(false) }
     var showConsumedDetail by remember { mutableStateOf(false) }
@@ -326,9 +316,9 @@ fun HomeScreen(
 
         // ---- Focus now (primary, actionable) ------------------------------
         // (feedback 2026-11-17): lists EVERY nutrient that is chronically
-        // low (7/30/90/365-day deficiency model), no count cap. The card
-        // keeps its size — the rows scroll INSIDE it, so the rest of the
-        // dashboard stays put.
+        // low (7/30/90/365-day deficiency model), no count cap. Uniform
+        // subsection height (2026-11-17): the inner list holds the SAME
+        // fixed height as the symptoms section — taller lists scroll INSIDE.
         item {
             SectionHeader(
                 "Focus now",
@@ -353,9 +343,9 @@ fun HomeScreen(
                         Column(
                             Modifier
                                 .fillMaxWidth()
-                                // Same footprint the section had with six
-                                // rows; everything beyond scrolls inside.
-                                .heightIn(max = FOCUS_NOW_MAX_HEIGHT)
+                                // Uniform height — same as every other
+                                // scrollable Home subsection.
+                                .height(SUBSECTION_SCROLL_HEIGHT)
                                 // Fling dies at the section edge — leftover
                                 // momentum never chains to the dashboard list.
                                 .killParentFling()
@@ -384,14 +374,18 @@ fun HomeScreen(
         // ---- Score ring (labeled) + trend ---------------------------------
         item { ScoreCard(state, onOpenInsights, onExplain = { showScoreExplainer = true }) }
 
-        // ---- Quick stats ----------------------------------------------------
-        item { CaloriesCard(state) }
+        // (feedback 2026-11-17) The separate "Energy & macros" quick-stats
+        // card is GONE — the Consumed-so-far card at the top already shows
+        // energy + macros, making this section redundant.
 
         // ---- All-tier nutrients ----------------------------------------------
+        // (feedback 2026-11-17): one CONTINUOUS scrollable list — the old
+        // Tier-2/3 expand button is gone; tiers stay ordered but scroll
+        // inside the same uniform-height subsection as everything else.
         item {
             SectionHeader(
                 "Today's nutrients",
-                "Tier 1 = critical, 2 = important, 3 = nice to have. All shown."
+                "Tier 1 = critical, 2 = important, 3 = nice to have."
             )
         }
         item {
@@ -405,41 +399,26 @@ fun HomeScreen(
                                 "import automatically. Nutrient bars appear once food is analyzed.",
                             actionLabel = null, onAction = null
                         )
-                    }
-                    state.tier1.forEach { comp ->
-                        NutrientProgressRow(
-                            name = comp.name, tier = comp.tier, unit = comp.unit,
-                            intake = comp.intake, target = comp.target,
-                            coverage = comp.coverage, status = comp.status,
-                            emphasize = true,
-                            onClick = { onOpenNutrient(comp.nutrientId) }
-                        )
-                    }
-                    AnimatedVisibility(visible = tiersExpanded) {
-                        Column {
-                            state.otherTiers.forEach { comp ->
+                    } else {
+                        val scroll = rememberScrollState()
+                        Column(
+                            Modifier
+                                .fillMaxWidth()
+                                // Uniform height — same as every other
+                                // scrollable Home subsection.
+                                .height(SUBSECTION_SCROLL_HEIGHT)
+                                .killParentFling()
+                                .verticalScroll(scroll)
+                        ) {
+                            (state.tier1 + state.otherTiers).forEach { comp ->
                                 NutrientProgressRow(
                                     name = comp.name, tier = comp.tier, unit = comp.unit,
                                     intake = comp.intake, target = comp.target,
                                     coverage = comp.coverage, status = comp.status,
+                                    emphasize = comp.tier == 1,
                                     onClick = { onOpenNutrient(comp.nutrientId) }
                                 )
                             }
-                        }
-                    }
-                    if (state.otherTiers.isNotEmpty()) {
-                        TextButton(onClick = { tiersExpanded = !tiersExpanded }) {
-                            Icon(
-                                if (tiersExpanded) Icons.Filled.ExpandLess
-                                else Icons.Filled.ExpandMore,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(Modifier.width(4.dp))
-                            Text(
-                                if (tiersExpanded) "Hide Tier 2 & 3 (${state.otherTiers.size})"
-                                else "Show Tier 2 & 3 (${state.otherTiers.size})"
-                            )
                         }
                     }
                 }

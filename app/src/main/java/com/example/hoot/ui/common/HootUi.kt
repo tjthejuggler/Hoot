@@ -4,6 +4,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.unit.Velocity
+import androidx.compose.ui.unit.dp
 import com.example.hoot.data.local.entity.NutrientDefinitionEntity
 import com.example.hoot.domain.nutrition.DayKeys
 import com.example.hoot.domain.score.ScoreStatus
@@ -34,6 +35,14 @@ fun Modifier.killParentFling(): Modifier = nestedScroll(object : NestedScrollCon
     override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity =
         available // swallow the leftover — do not pass it to the parent list
 })
+
+/**
+ * Uniform height of every scrollable Home subsection (feedback 2026-11-17):
+ * the symptoms list, Focus-now and Today's-nutrients all cap/hold the SAME
+ * fixed inner-scroll height so the dashboard sections line up visually.
+ * Attach as `.height(SUBSECTION_SCROLL_HEIGHT)` on the inner scrollable.
+ */
+val SUBSECTION_SCROLL_HEIGHT = 300.dp
 
 /**
  * Today's local day key ("yyyy-MM-dd", Tail convention). Delegates to the

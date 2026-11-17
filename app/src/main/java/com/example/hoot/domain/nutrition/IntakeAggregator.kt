@@ -118,20 +118,20 @@ class IntakeAggregator(
             }
 
             // ── Supplements: contributions already per-serving canonical ───
-            // ENERGY MACROS ARE SKIPPED (user feedback 2026-09-23): LLM
-            // supplement panels report trivial per-serving energy ("Glutamine
-            // 10 g" → 40 kcal, omega-3 → 10 kcal) which previously summed
-            // into the same Energy figure as meals — a day with ONE 850 kcal
-            // meal displayed 910 kcal and the user counted the phantom 60.
-            // The energy/macros card reflects FOOD; pills contribute
-            // micronutrients (their macro content is derivatve noise, not a
-            // food the user ate). Protein from meal-replacement shakes still
-            // counts via its panel `protein` key — only `calories` is dropped.
+            // ALL ENERGY MACROS ARE SKIPPED (user feedback 2026-09-23, widened
+            // 2026-11-17): LLM supplement panels report macro content of the
+            // PILL itself ("Glutamine 10 g" → 10 g protein + 40 kcal,
+            // collagen → 11 g protein), which previously summed into the same
+            // figures as FOOD — a day with NOTHING eaten yet displayed
+            // "11 g protein" the moment the user logged their morning pills.
+            // The energy/macros figures reflect FOOD; pills contribute
+            // micronutrients only (their macro content is derivative filler,
+            // not a food the user ate). [supplementLedgerRows] pins this.
             for (supp in meals.supplementsByDay(day)) {
                 val values = runCatching { JSONObject(supp.nutrientContributions) }.getOrNull() ?: continue
                 for (rawKey in values.keys()) {
                     val nutrientId = NutrientKeys.canonicalId(rawKey) ?: rawKey
-                    if (nutrientId == "calories") continue   // see block comment
+                    if (nutrientId in SUPPLEMENT_MACRO_SKIP) continue   // see block comment
                     val amount = values.optDouble(rawKey, Double.NaN)
                     if (amount.isNaN() || amount <= 0) continue
                     val canonical = Units.canonicalNutrientAmount(
@@ -187,6 +187,15 @@ class IntakeAggregator(
 
     companion object {
         private const val TAG = "HootAggregator"
+
+        /**
+         * Energy-macro ids supplements must NEVER credit to the day ledger
+         * (bug 2026-11-17: "11 g protein today" with zero food eaten — the
+         * collagen panel's protein key). Pure JVM — pinned by
+         * `IntakeAggregatorStructuredMacroTest`.
+         */
+        val SUPPLEMENT_MACRO_SKIP: Set<String> =
+            setOf("calories", "protein", "carbohydrates", "total_fat")
 
         /**
          * Structured-macro ledger rows for one meal (pure, JVM-testable):

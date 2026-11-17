@@ -1,6 +1,8 @@
 package com.example.hoot.ui.settings
 
 import android.content.Intent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -78,6 +80,28 @@ fun SettingsScreen(
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
 
+    // Knowledge-pack import (feedback 2026-11-17): SAF text/JSON picker →
+    // read → parse → apply; result surfaces in the snackbar.
+    val pickKnowledgePack =
+        rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) {
+                scope.launch {
+                    val text = runCatching {
+                        context.contentResolver.openInputStream(uri)?.bufferedReader()
+                            ?.use { it.readText() }
+                    }.getOrNull()
+                    if (text.isNullOrBlank()) {
+                        snackbar.showSnackbar("Couldn't read the file")
+                        return@launch
+                    }
+                    val summary = viewModel.importKnowledgePack(text)
+                    snackbar.showSnackbar(
+                        summary ?: "Not a Hoot knowledge pack (missing kind marker)"
+                    )
+                }
+            }
+        }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -147,6 +171,33 @@ fun SettingsScreen(
                 onSaveGoal = viewModel::saveCustomGoal,
                 onResetGoal = viewModel::resetGoal,
                 onResetAll = viewModel::resetAllGoals
+            )
+
+            // ── Knowledge pack ────────────────────────────────────────────
+            KnowledgePackSection(
+                onExport = {
+                    scope.launch {
+                        val json = viewModel.exportKnowledgePack()
+                        if (json == null) {
+                            snackbar.showSnackbar("Export failed")
+                        } else {
+                            val send = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_SUBJECT, "Hoot knowledge pack")
+                                putExtra(Intent.EXTRA_TEXT, json)
+                            }
+                            context.startActivity(Intent.createChooser(send, "Share knowledge pack"))
+                        }
+                    }
+                },
+                onImport = {
+                    // SAF picker → read → parse → apply. Result delivered via
+                    // the ActivityResult API below (registered in MainActivity
+                    // scope via rememberLauncherForActivityResult in this file).
+                    pickKnowledgePack.launch(
+                        arrayOf("text/plain", "application/json", "text/json")
+                    )
+                }
             )
 
             // ── Sync preferences ──────────────────────────────────────────
