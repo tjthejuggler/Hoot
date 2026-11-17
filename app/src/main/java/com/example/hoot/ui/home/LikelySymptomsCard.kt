@@ -50,7 +50,8 @@ fun LikelySymptomsCard(
         ) {
             com.example.hoot.ui.common.SectionHeader(
                 title = "Likely symptoms",
-                caption = "From your intake patterns over the last week → year."
+                caption = "From your intake patterns over the last week → year.",
+                modifier = Modifier.weight(1f)
             )
         }
         Spacer(Modifier.height(10.dp))
