@@ -1,5 +1,9 @@
 package com.example.hoot.ui.common
 
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.unit.Velocity
 import com.example.hoot.data.local.entity.NutrientDefinitionEntity
 import com.example.hoot.domain.nutrition.DayKeys
 import com.example.hoot.domain.score.ScoreStatus
@@ -7,6 +11,29 @@ import java.time.LocalDate
 import java.time.ZoneId
 
 /** Shared UI-level helpers for the phase-4 screens. */
+
+/**
+ * Fling containment for fixed-height scrollable sections nested inside the
+ * main screen scroll (feedback 2026-11-17): when a fling inside the section
+ * reaches its top/bottom edge, the REMAINING velocity is consumed here
+ * instead of chaining to the parent list — a hard fling stops dead at the
+ * section boundary rather than yanking the whole dashboard.
+ *
+ * Deliberate SLOW drags still chain (standard nested-scroll behaviour), so
+ * the user can keep pulling the main screen past a section edge; only the
+ * leftover FLING momentum is killed.
+ *
+ * Attach BEFORE the scroll modifier:
+ * `Modifier.killParentFling().verticalScroll(state)`.
+ *
+ * Protocol: onPostFling runs AFTER the inner scroller finished flinging —
+ * `available` is exactly the velocity it could not use (it hit an edge).
+ * Returning it reports it consumed, so the parent list never flings with it.
+ */
+fun Modifier.killParentFling(): Modifier = nestedScroll(object : NestedScrollConnection {
+    override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity =
+        available // swallow the leftover — do not pass it to the parent list
+})
 
 /**
  * Today's local day key ("yyyy-MM-dd", Tail convention). Delegates to the

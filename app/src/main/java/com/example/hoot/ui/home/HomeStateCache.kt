@@ -157,6 +157,9 @@ object HomeStateCache {
         put("unit", f.unit); put("target", f.target)
         put("recentAvgIntake", f.recentAvgIntake); put("todayIntake", f.todayIntake)
         put("recentCoverage", f.recentCoverage); put("todayCoverage", f.todayCoverage)
+        put("likelihood", f.likelihood)
+        put("worstWindowDays", f.worstWindowDays)
+        put("worstWindowAvgCoverage", f.worstWindowAvgCoverage)
     }
 
     private fun focusFromJson(o: JSONObject) = FocusNowItem(
@@ -166,7 +169,11 @@ object HomeStateCache {
         recentAvgIntake = o.optDouble("recentAvgIntake"),
         todayIntake = o.optDouble("todayIntake"),
         recentCoverage = o.optDouble("recentCoverage"),
-        todayCoverage = o.optDouble("todayCoverage")
+        todayCoverage = o.optDouble("todayCoverage"),
+        // Defaults keep pre-2026-11-17 cached states parseable.
+        likelihood = o.optDouble("likelihood", 0.0),
+        worstWindowDays = o.optInt("worstWindowDays", 0),
+        worstWindowAvgCoverage = o.optDouble("worstWindowAvgCoverage", 1.0)
     )
 
     private fun insightToJson(i: Insight) = JSONObject().apply {

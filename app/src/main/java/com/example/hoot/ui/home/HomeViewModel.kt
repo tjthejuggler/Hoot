@@ -196,20 +196,30 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                     )
                 }
 
-                // ---- Focus now: trailing-7d average AND today gaps --------
+                // ---- Focus now + symptoms: shared multi-window stats -----
+                // (feedback 2026-11-17): Focus-now now lists EVERY nutrient
+                // whose chronic (7/30/90/365-day) deficiency likelihood
+                // clears the model threshold — NO count cap; the Home card
+                // scrolls internally instead. One stats pass feeds both the
+                // focus list and the likely-symptoms ranking below.
                 val windowTotals = rangeRows.groupBy { it.nutrientId }
+                val windowStats = buildWindowStats(day, comps, rangeRows)
                 val focusInputs = comps.filter { !it.isLimitTracker }.map { comp ->
-                    val series = windowTotals[comp.nutrientId].orEmpty()
-                        .filter { (it.day ?: "") >= recentFrom }
+                    val stats = windowStats[comp.nutrientId].orEmpty()
+                    val week = stats.firstOrNull { it.days == FocusNowEngine.RECENT_DAYS }
                     FocusNowInput(
                         nutrientId = comp.nutrientId,
                         name = comp.name,
                         tier = comp.tier,
                         unit = comp.unit,
                         target = comp.target,
-                        recentAvgIntake = series.map { it.total }.takeIf { it.isNotEmpty() }
-                            ?.average() ?: 0.0,
-                        todayIntake = comp.intake
+                        // 7-day average over LOGGED days (a logged day with
+                        // no row for this nutrient counts as 0) — consistent
+                        // with the deficiency windows instead of the old
+                        // average-over-existing-rows that inflated coverage.
+                        recentAvgIntake = week?.avgCoverage?.times(comp.target) ?: 0.0,
+                        todayIntake = comp.intake,
+                        windows = stats
                     )
                 }
                 val focus = FocusNowEngine.select(focusInputs)
@@ -219,7 +229,8 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                 // ---- Likely symptoms (deficiency system, 2026-11-16) ------
                 // Multi-window coverage → DeficiencyModel assessments →
                 // SymptomMatcher ranking over seed+research associations.
-                val likelySymptoms = runCatching { computeSymptoms(day, comps, windowTotals) }
+                // Shares the stats pass built for Focus-now above.
+                val likelySymptoms = runCatching { computeSymptoms(comps, windowStats) }
                     .onFailure {
                         if (it is kotlinx.coroutines.CancellationException) throw it
                         android.util.Log.e("HootSymptoms", "symptom ranking failed", it)
@@ -429,64 +440,95 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Deficiency assessments over 7/30/90/365-day windows → ranked symptom
-     * list (deficiency system, 2026-11-16). Pure read path; never throws
-     * past the caller's runCatching.
+     * Multi-window coverage facts per nutrient (7/30/90/365 days, shared by
+     * Focus-now and the likely-symptoms ranking since 2026-11-17).
+     *
+     * Tracked-day convention: a day counts as tracked for EVERY nutrient
+     * when the user logged ANY intake that day; a logged day with no row
+     * for a nutrient means that nutrient's intake was 0 (closes the old
+     * "iodine inconsistency" where never-logged nutrients looked perfect
+     * to the symptoms model). Days with no logging at all are excluded —
+     * they prove nothing.
+     *
+     * Startup-path fix (2026-11-16, kept): ONE ledger query per window,
+     * sliced in memory — never one query per nutrient per window.
      */
-    private suspend fun computeSymptoms(
+    private suspend fun buildWindowStats(
         day: String,
         comps: List<ScoreComponent>,
-        weekTotals: Map<String, List<NutrientDayTotal>>
-    ): List<SymptomMatcher.RankedSymptom> {
-        val associations = graph.symptomAssociations.all()
-        if (associations.isEmpty()) return emptyList()
+        weekRows: List<NutrientDayTotal>
+    ): Map<String, List<DeficiencyModel.WindowStat>> {
         val windows = intArrayOf(7, 30, 90, 365)
-        // Startup-path fix (2026-11-16): the old loop issued ONE
-        // dailyTotalsForWindow query PER NUTRIENT PER WINDOW (~37 nutrients ×
-        // 3 extra windows ≈ 111 full-window GROUP BY scans), each re-reading
-        // the same ledger. Right after launch the self-heals re-trigger this
-        // repeatedly, so Home's spinner could spin for a very long time.
-        // Pre-fetch each window ONCE and slice in memory — same output,
-        // 3 queries total.
-        val windowRows = HashMap<Int, Map<String, List<NutrientDayTotal>>>(windows.size)
+        // One bucket per window: logged days + per-nutrient (day, total) rows.
+        class Bucket(
+            val loggedDays: List<String>,
+            val perNutrient: Map<String, List<Pair<String, Double>>>
+        )
+        val byWindow = HashMap<Int, Bucket>(windows.size)
         for (w in windows) {
-            if (w == FocusNowEngine.RECENT_DAYS) continue // reuse weekTotals
-            windowRows[w] = runCatching {
-                graph.nutrients.dailyTotalsForWindow(dayKeyMinusDays(day, (w - 1).toLong()), day)
-            }.getOrDefault(emptyList()).groupBy { it.nutrientId }
+            val rows = if (w == FocusNowEngine.RECENT_DAYS) {
+                weekRows // already the trailing-7d observation
+            } else {
+                runCatching {
+                    graph.nutrients.dailyTotalsForWindow(
+                        dayKeyMinusDays(day, (w - 1).toLong()), day
+                    )
+                }.getOrDefault(emptyList())
+            }.filter { !it.day.isNullOrBlank() }
+            // Days the user actually logged something (any nutrient).
+            val loggedDays = rows.mapNotNull { it.day }.distinct()
+            val perNutrient = rows.groupBy({ it.nutrientId }) {
+                (it.day ?: "") to it.total
+            }
+            byWindow[w] = Bucket(loggedDays, perNutrient)
         }
-        val inputs = ArrayList<DeficiencyModel.Input>(comps.size)
+        val out = HashMap<String, List<DeficiencyModel.WindowStat>>(comps.size)
         for (comp in comps) {
             if (comp.target <= 0) continue
             val stats = windows.map { w ->
-                val from = dayKeyMinusDays(day, (w - 1).toLong())
-                val totals = if (w == FocusNowEngine.RECENT_DAYS) {
-                    // Reuse the already-fetched 7-day rows.
-                    weekTotals[comp.nutrientId].orEmpty().filter { (it.day ?: "") >= from }
-                } else {
-                    windowRows[w]?.get(comp.nutrientId).orEmpty()
-                        .filter { (it.day ?: "") >= from }
+                val bucket = byWindow[w] ?: return@map DeficiencyModel.WindowStat(w, 0, 0, 1.0)
+                if (bucket.loggedDays.isEmpty()) {
+                    return@map DeficiencyModel.WindowStat(w, 0, 0, 1.0)
                 }
-                val tracked = totals.size
-                if (tracked == 0) return@map DeficiencyModel.WindowStat(w, 0, 0, 1.0)
+                val totalsByDay = bucket.perNutrient[comp.nutrientId].orEmpty().toMap()
                 var low = 0
                 var covSum = 0.0
-                for (t in totals) {
+                for (d in bucket.loggedDays) {
+                    val total = totalsByDay[d] ?: 0.0
                     val cov = if (comp.isLimitTracker) {
-                        if (t.total <= comp.target) 1.0 else (comp.target / t.total)
-                    } else (t.total / comp.target).coerceAtMost(1.0)
+                        if (total <= comp.target) 1.0 else (comp.target / total)
+                    } else (total / comp.target).coerceAtMost(1.0)
                     covSum += cov
                     if (cov < DeficiencyModel.LOW_RATIO) low++
                 }
-                DeficiencyModel.WindowStat(w, tracked, low, covSum / tracked)
+                DeficiencyModel.WindowStat(w, bucket.loggedDays.size, low, covSum / bucket.loggedDays.size)
             }
+            out[comp.nutrientId] = stats
+        }
+        return out
+    }
+
+    /**
+     * Deficiency assessments over the shared multi-window stats → ranked
+     * symptom list (deficiency system, 2026-11-16). Pure read path; never
+     * throws past the caller's runCatching.
+     */
+    private suspend fun computeSymptoms(
+        comps: List<ScoreComponent>,
+        windowStats: Map<String, List<DeficiencyModel.WindowStat>>
+    ): List<SymptomMatcher.RankedSymptom> {
+        val associations = graph.symptomAssociations.all()
+        if (associations.isEmpty()) return emptyList()
+        val inputs = ArrayList<DeficiencyModel.Input>(comps.size)
+        for (comp in comps) {
+            if (comp.target <= 0) continue
             inputs += DeficiencyModel.Input(
                 nutrientId = comp.nutrientId,
                 name = comp.name,
                 tier = comp.tier,
                 unit = comp.unit,
                 target = comp.target,
-                windows = stats,
+                windows = windowStats[comp.nutrientId].orEmpty(),
                 todayCoverage = comp.coverage
             )
         }

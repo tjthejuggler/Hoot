@@ -3,6 +3,8 @@ package com.example.hoot.ui.home
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,6 +14,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -68,6 +71,7 @@ import com.example.hoot.ui.common.TierChip
 import com.example.hoot.ui.common.dayKeyToDatePickerMillis
 import com.example.hoot.ui.common.datePickerMillisToDayKey
 import com.example.hoot.ui.common.formatNutrient
+import com.example.hoot.ui.common.killParentFling
 import com.example.hoot.ui.common.prettyDay
 import com.example.hoot.ui.common.todayKey
 import com.example.hoot.ui.tail.TailSyncBanner
@@ -76,7 +80,14 @@ import com.example.hoot.ui.theme.ScoreLow
 import com.example.hoot.ui.theme.ScoreMid
 
 /**
- * Home (start destination, overhaul feedback #4): hybrid "what should I eat
+ * Max height of the Focus-now card's inner scroll area. Sized to keep the
+ * section's visual footprint close to the old ~6-row card (feedback
+ * 2026-11-17): taller lists scroll INSIDE the card instead of growing it.
+ */
+internal val FOCUS_NOW_MAX_HEIGHT = 460.dp
+
+/**
+  * Home (start destination, overhaul feedback #4): hybrid "what should I eat
  * today" dashboard. Focus-now gaps first (recent-past AND today, tappable →
  * food suggestions), labeled score ring with explainer, quick stats,
  * trend sparkline, sync/analysis chips, all-tier nutrient sections
@@ -314,10 +325,14 @@ fun HomeScreen(
         }
 
         // ---- Focus now (primary, actionable) ------------------------------
+        // (feedback 2026-11-17): lists EVERY nutrient that is chronically
+        // low (7/30/90/365-day deficiency model), no count cap. The card
+        // keeps its size — the rows scroll INSIDE it, so the rest of the
+        // dashboard stays put.
         item {
             SectionHeader(
                 "Focus now",
-                "Lately low and still low today."
+                "Chronically low nutrients, ranked by long-term gap."
             )
         }
         item {
@@ -334,17 +349,32 @@ fun HomeScreen(
                             modifier = Modifier.padding(0.dp)
                         )
                     } else {
-                        state.focusNow.forEach { item ->
-                            FocusNowRow(
-                                name = item.name,
-                                tier = item.tier,
-                                unit = item.unit,
-                                todayIntake = item.todayIntake,
-                                target = item.target,
-                                todayCoverage = item.todayCoverage,
-                                recentCoverage = item.recentCoverage,
-                                onClick = { onOpenNutrient(item.nutrientId) }
-                            )
+                        val scroll = rememberScrollState()
+                        Column(
+                            Modifier
+                                .fillMaxWidth()
+                                // Same footprint the section had with six
+                                // rows; everything beyond scrolls inside.
+                                .heightIn(max = FOCUS_NOW_MAX_HEIGHT)
+                                // Fling dies at the section edge — leftover
+                                // momentum never chains to the dashboard list.
+                                .killParentFling()
+                                .verticalScroll(scroll)
+                        ) {
+                            state.focusNow.forEach { item ->
+                                FocusNowRow(
+                                    name = item.name,
+                                    tier = item.tier,
+                                    unit = item.unit,
+                                    todayIntake = item.todayIntake,
+                                    target = item.target,
+                                    todayCoverage = item.todayCoverage,
+                                    recentCoverage = item.recentCoverage,
+                                    worstWindowDays = item.worstWindowDays,
+                                    worstWindowAvgCoverage = item.worstWindowAvgCoverage,
+                                    onClick = { onOpenNutrient(item.nutrientId) }
+                                )
+                            }
                         }
                     }
                 }

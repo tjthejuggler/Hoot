@@ -5,8 +5,10 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Unit tests for the "Focus now" selection engine (UI overhaul feedback #4):
- * recent-past AND today gaps, tier-ranked, limit-trackers excluded.
+ * Unit tests for the "Focus now" selection engine (reworked 2026-11-17):
+ * every nutrient whose multi-window (7/30/90/365-day) chronic deficiency
+ * likelihood clears [DeficiencyModel.REPORT_THRESHOLD] is listed — NO count
+ * cap — ranked most-chronically-deficient first, least-eaten-today next.
  */
 class FocusNowEngineTest {
 
@@ -16,35 +18,43 @@ class FocusNowEngineTest {
         target: Double = 100.0,
         recentAvg: Double = 40.0,
         today: Double = 10.0,
-        unit: String = "mg"
+        unit: String = "mg",
+        windows: List<DeficiencyModel.WindowStat> = defaultWindows()
     ) = FocusNowInput(
         nutrientId = id, name = id, tier = tier, unit = unit,
-        target = target, recentAvgIntake = recentAvg, todayIntake = today
+        target = target, recentAvgIntake = recentAvg, todayIntake = today,
+        windows = windows
+    )
+
+    /** Chronically low in every window: 25 tracked days, all low, ~30% avg. */
+    private fun defaultWindows(tracked: Int = 25) = listOf(
+        DeficiencyModel.WindowStat(7, tracked, tracked, 0.3),
+        DeficiencyModel.WindowStat(30, tracked, tracked, 0.3),
+        DeficiencyModel.WindowStat(90, tracked, tracked, 0.3),
+        DeficiencyModel.WindowStat(365, tracked, tracked, 0.3)
+    )
+
+    /** Healthy windows: nothing low, full coverage everywhere. */
+    private fun healthyWindows(tracked: Int = 25) = listOf(
+        DeficiencyModel.WindowStat(7, tracked, 0, 1.0),
+        DeficiencyModel.WindowStat(30, tracked, 0, 1.0),
+        DeficiencyModel.WindowStat(90, tracked, 0, 1.0),
+        DeficiencyModel.WindowStat(365, tracked, 0, 1.0)
     )
 
     @Test
-    fun `selects nutrients lacking recently and today`() {
-        val out = FocusNowEngine.select(listOf(input("magnesium", recentAvg = 40.0, today = 20.0)))
+    fun `selects nutrients chronically lacking`() {
+        val out = FocusNowEngine.select(listOf(input("magnesium")))
         assertEquals(listOf("magnesium"), out.map { it.nutrientId })
-        assertEquals(0.4, out.first().recentCoverage, 1e-9)
-        assertEquals(0.2, out.first().todayCoverage, 1e-9)
+        assertTrue(out.first().likelihood >= DeficiencyModel.REPORT_THRESHOLD)
     }
 
     @Test
-    fun `excludes nutrients already on track today`() {
+    fun `excludes nutrients healthy across windows even with empty today`() {
+        // Fresh day: today = 0, but all windows fully covered → not a real gap.
         val out = FocusNowEngine.select(
-            listOf(
-                input("ok_recent", recentAvg = 50.0, today = 95.0),
-                input("gap", recentAvg = 50.0, today = 30.0)
-            )
+            listOf(input("vitamin_c", recentAvg = 90.0, today = 0.0, windows = healthyWindows()))
         )
-        assertEquals(listOf("gap"), out.map { it.nutrientId })
-    }
-
-    @Test
-    fun `excludes nutrients fine in recent past even if today is empty`() {
-        // Fresh day: today = 0, but 7-day average was above 80% → not a real gap.
-        val out = FocusNowEngine.select(listOf(input("vitamin_c", recentAvg = 90.0, today = 0.0)))
         assertTrue(out.isEmpty())
     }
 
@@ -62,32 +72,90 @@ class FocusNowEngineTest {
     }
 
     @Test
-    fun `ranks tier ascending then by lowest recent coverage`() {
+    fun `excludes inputs without window evidence`() {
+        // Legacy-style input (no windows): no chronic evidence → no claim.
         val out = FocusNowEngine.select(
-            listOf(
-                input("t2_low", tier = 2, recentAvg = 20.0),
-                input("t1_high", tier = 1, recentAvg = 70.0),
-                input("t1_low", tier = 1, recentAvg = 10.0),
-                input("t3_low", tier = 3, recentAvg = 5.0)
+            listOf(input("legacy", windows = emptyList()))
+        )
+        assertTrue(out.isEmpty())
+    }
+
+    @Test
+    fun `no cap - all qualifying nutrients are listed`() {
+        val many = (1..12).map { input("n$it", tier = 1) }
+        val out = FocusNowEngine.select(many)
+        assertEquals(12, out.size)
+    }
+
+    @Test
+    fun `chronic deficiency ranks above single bad week`() {
+        // Both tier 1. chronicBad is low in ALL windows; blipWeek only in
+        // the 7-day one (long windows healthy).
+        val chronicBad = input(
+            "chronic_bad",
+            windows = listOf(
+                DeficiencyModel.WindowStat(7, 25, 25, 0.3),
+                DeficiencyModel.WindowStat(30, 25, 25, 0.3),
+                DeficiencyModel.WindowStat(90, 25, 25, 0.3),
+                DeficiencyModel.WindowStat(365, 25, 25, 0.3)
             )
         )
-        assertEquals(
-            listOf("t1_low", "t1_high", "t2_low", "t3_low"),
-            out.map { it.nutrientId }
+        val blipWeek = input(
+            "blip_week",
+            windows = listOf(
+                DeficiencyModel.WindowStat(7, 25, 25, 0.3),
+                DeficiencyModel.WindowStat(30, 25, 2, 0.95),
+                DeficiencyModel.WindowStat(90, 25, 2, 0.95),
+                DeficiencyModel.WindowStat(365, 25, 2, 0.95)
+            )
         )
+        val out = FocusNowEngine.select(listOf(blipWeek, chronicBad))
+        assertEquals(listOf("chronic_bad", "blip_week"), out.map { it.nutrientId })
     }
 
     @Test
-    fun `caps results at max`() {
-        val many = (1..10).map { input("n$it", tier = 1, recentAvg = 10.0) }
-        assertEquals(FocusNowEngine.RECENT_DAYS /* sanity const */, 7)
-        assertEquals(6, FocusNowEngine.select(many).size)
-        assertEquals(3, FocusNowEngine.select(many, max = 3).size)
+    fun `less eaten today ranks higher on equal likelihood`() {
+        // Identical windows + tier → the nutrient with less consumed so far
+        // today comes first (user request 2026-11-17).
+        val out = FocusNowEngine.select(
+            listOf(
+                input("eaten_some", today = 60.0),
+                input("eaten_nothing", today = 0.0)
+            )
+        )
+        assertEquals(listOf("eaten_nothing", "eaten_some"), out.map { it.nutrientId })
     }
 
     @Test
-    fun `boundary - exactly 80 percent is not lacking`() {
-        val out = FocusNowEngine.select(listOf(input("edge", recentAvg = 80.0, today = 80.0)))
+    fun `worst window facts carried through`() {
+        val out = FocusNowEngine.select(
+            listOf(
+                input(
+                    "iron",
+                    windows = listOf(
+                        DeficiencyModel.WindowStat(7, 25, 0, 1.0),
+                        DeficiencyModel.WindowStat(30, 25, 10, 0.4)
+                    )
+                )
+            )
+        )
+        assertEquals(30, out.first().worstWindowDays)
+        assertEquals(0.4, out.first().worstWindowAvgCoverage, 0.01)
+    }
+
+    @Test
+    fun `sparse data alone does not qualify`() {
+        // One window, 2 tracked days of poor coverage: data confidence
+        // (1-e^(-2/12) ≈ 0.15) shrinks likelihood below the reporting
+        // threshold → no false alarm from a two-day blip.
+        val out = FocusNowEngine.select(
+            listOf(
+                input(
+                    "sparse",
+                    windows = listOf(DeficiencyModel.WindowStat(7, 2, 2, 0.2))
+                )
+            )
+        )
         assertTrue(out.isEmpty())
     }
 

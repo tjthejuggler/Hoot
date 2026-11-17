@@ -163,10 +163,14 @@ fun AllSmartPicksSheet(
                         style = MaterialTheme.typography.titleLarge
                     )
                     Spacer(Modifier.height(4.dp))
+                    // Uncapped focus list (2026-11-17): name the top gaps and
+                    // summarize the rest instead of printing all of them.
+                    val gapNames = gaps.take(6).joinToString { g -> g.name } +
+                        if (gaps.size > 6) " +${gaps.size - 6} more" else ""
                     Text(
                         if (gaps.isEmpty()) "No active gaps right now."
                         else "Keyed to your current gaps: " +
-                            gaps.joinToString { g -> g.name } + ". " +
+                            gapNames + ". " +
                             "Ranked by how much of each deficit one serving covers.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant

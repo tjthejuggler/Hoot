@@ -23,6 +23,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.hoot.domain.insights.SymptomMatcher
+import com.example.hoot.ui.common.killParentFling
 
 /**
  * "Likely symptoms" section (deficiency system, 2026-11-16): symptoms the
@@ -59,7 +60,10 @@ fun LikelySymptomsCard(
         LazyColumn(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(SYMPTOM_LIST_HEIGHT),
+                .height(SYMPTOM_LIST_HEIGHT)
+                // Fling dies at the section edge — leftover momentum never
+                // chains to the dashboard list (feedback 2026-11-17).
+                .killParentFling(),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(
                 start = 16.dp, end = 16.dp, bottom = 8.dp
             ),

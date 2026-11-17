@@ -33,7 +33,7 @@ import com.example.hoot.ui.theme.ScoreMid
 
 /** Row/chip-level composables of the Home dashboard (extracted from HomeScreen). */
 
-/** Focus-now row: name + tier chip + "so far today" progress + 7-day hint. */
+/** Focus-now row: name + tier chip + "so far today" progress + chronic hint. */
 @Composable
 internal fun FocusNowRow(
     name: String,
@@ -43,6 +43,8 @@ internal fun FocusNowRow(
     target: Double,
     todayCoverage: Double,
     recentCoverage: Double,
+    worstWindowDays: Int = 0,
+    worstWindowAvgCoverage: Double = recentCoverage,
     onClick: () -> Unit
 ) {
     Column(
@@ -60,7 +62,13 @@ internal fun FocusNowRow(
                 modifier = Modifier.weight(1f)
             )
             Text(
-                "7-day avg ${(recentCoverage * 100).toInt()}%",
+                if (worstWindowDays >= 30) {
+                    // Chronic (month+) gap: the long-window average says more
+                    // than this week's snapshot.
+                    "${worstWindowDays}d avg ${(worstWindowAvgCoverage * 100).toInt()}%"
+                } else {
+                    "7-day avg ${(recentCoverage * 100).toInt()}%"
+                },
                 style = MaterialTheme.typography.labelSmall,
                 color = ScoreLow
             )
