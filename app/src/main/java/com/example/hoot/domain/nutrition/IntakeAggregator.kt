@@ -15,9 +15,12 @@ import java.util.UUID
  * Aggregates resolved meal ingredients + supplement contributions into the
  * per-nutrient-per-day intake ledger (docs/NUTRIENTS.md §7):
  *
- *   intake(D, N) = Σ meals: gramsEstimate(I)/perAmount × profile.valuesJson[N]
- *                + Σ meals' structured macros (Tail v2 rows / v6 captures)
- *                  for nutrients that meal's ingredients left uncovered
+ *   intake(D, N) = Σ meals: structured macros (Tail v2 rows / v6 captures)
+ *                    — FACT: exactly what Tail displays; ingredients never
+ *                    override or add to kcal/protein/carbs/fat
+ *                + Σ meals: gramsEstimate(I)/perAmount × profile.valuesJson[N]
+ *                    for every nutrient Tail does NOT assert (enrichment:
+ *                    fiber, micronutrients, …)
  *                + Σ supplements: nutrientContributions (canonical)
  *                + water: Σ tail_entries(kind="water") amounts (L, canonical)
  *
@@ -59,10 +62,15 @@ class IntakeAggregator(
 
             // ── Meals: ingredient grams × per-100 g profile ─────────────
             for (meal in meals.mealsByDay(day)) {
-                // Canonical nutrient ids THIS meal's ingredient rows actually
-                // produced (per-meal set — the structured-macro fill below
-                // must never double-count a nutrient the resolver credited).
-                val coveredByIngredients = HashSet<String>()
+                // TAIL IS FACT (feedback 2026-11-17): when the meal row
+                // carries structured macros (Tail v2 rows / v6 captures),
+                // those kcal/protein/carbs/fat ARE the ground truth Tail
+                // displays — Hoot's ingredient estimates must NOT override
+                // or add to them. Ingredients still enrich every OTHER
+                // nutrient (fiber, iron, micronutrients, …) Tail doesn't
+                // carry. Meals WITHOUT structured macros (v1 text fallback,
+                // manual entry) keep ingredient-driven aggregation.
+                val authoritativeMacros = structuredMacroNutrientIds(meal)
                 for (ing in meals.ingredientsForMeal(meal.id)) {
                     val profile = ing.foodId?.let { nutrients.profileForFood(it) } ?: continue
                     // gramsEstimate is written by the resolver at resolution
@@ -93,6 +101,10 @@ class IntakeAggregator(
                         val canonical = Units.canonicalNutrientAmount(
                             nutrientId, amount * scale, null, unitsById[nutrientId] ?: continue
                         ) ?: continue
+                        // Tail-authoritative macro? Skip the resolver's own
+                        // estimate for it — Hoot fills in ONLY what Tail
+                        // doesn't explicitly give.
+                        if (nutrientId in authoritativeMacros) continue
                         rows += NutrientIntakeEntity(
                             id = UUID.randomUUID().toString(),
                             nutrientId = nutrientId,
@@ -101,20 +113,21 @@ class IntakeAggregator(
                             sourceMealId = meal.id,
                             sourceSupplementId = null
                         )
-                        coveredByIngredients += nutrientId
                     }
                 }
 
-                // ── Structured-macro fill (Tail-sync bug 2026-09-21): Tail v2
-                // meal rows + v6 captures carry authoritative meal macros
-                // (kcal/protein/carbs/fat) that this aggregator previously
-                // IGNORED — a Tail meal whose text produced no resolvable
-                // ingredients credited ZERO protein/carbs, so Home showed
-                // "0 g carbs / 10 g protein" while Tail showed 105 g / 28 g.
-                // Credit each structured macro ONLY when the meal's
-                // ingredients produced nothing for that nutrient — no double
-                // count when both paths have data.
-                rows += structuredMacroRows(meal, day, coveredByIngredients, unitsById)
+                // ── Structured macros (precedence FIX 2026-11-17): Tail v2
+                // meal rows + v6 captures carry the authoritative
+                // kcal/protein/carbs/fat — the exact numbers Tail itself
+                // displays. Previously these were credited ONLY as
+                // gap-filler beneath Hoot's own ingredient estimates, so any
+                // day where the resolver produced different macros disagreed
+                // with Tail (feedback: "calories for today are not the same
+                // in Hoot as in Tail"). Now structured macros are credited
+                // unconditionally and the ingredient loop above SKIPS
+                // exactly those nutrients — Tail is fact; Hoot only enriches
+                // what Tail doesn't explicitly give.
+                rows += structuredMacroRows(meal, day, unitsById)
             }
 
             // ── Supplements: contributions already per-serving canonical ───
@@ -198,17 +211,34 @@ class IntakeAggregator(
             setOf("calories", "protein", "carbohydrates", "total_fat")
 
         /**
+         * Nutrient ids the meal row asserts as structured facts (Tail v2 rows
+         * / v6 captures). These kcal/protein/carbs/fat values are what Tail
+         * itself displays — Hoot's ingredient estimates must NEVER override
+         * or add to them (see recomputeDays). Pure, JVM-testable.
+         */
+        fun structuredMacroNutrientIds(meal: MealEntity): Set<String> = buildSet {
+            if (meal.calories > 0) add("calories")
+            if (meal.proteinGrams > 0) add("protein")
+            if (meal.carbsGrams > 0) add("carbohydrates")
+            if (meal.fatGrams > 0) add("total_fat")
+        }
+
+        /**
          * Structured-macro ledger rows for one meal (pure, JVM-testable):
          * Tail v2 meal rows and v6 in-app captures store authoritative
          * calories/protein/carbohydrates/total-fat directly on the meal row.
-         * Only nutrients with amount > 0 that [coveredByIngredients] does NOT
-         * already contain are credited (fill-missing, never double-count),
-         * each under a deterministic id so re-runs stay idempotent.
+         * PRECEDENCE FIX (feedback 2026-11-17): structured macros are now
+         * credited UNCONDITIONALLY (amount > 0) — they are Tail's facts —
+         * while the ingredient loop in [recomputeDays] skips exactly these
+         * nutrients so nothing double-counts. The former fill-missing
+         * semantics (ingredient estimates win, macros fill gaps) produced
+         * daily totals that disagreed with Tail whenever the resolver's
+         * estimates differed. Each row keeps a deterministic id so re-runs
+         * stay idempotent.
          */
         fun structuredMacroRows(
             meal: MealEntity,
             day: String,
-            coveredByIngredients: Set<String>,
             canonicalUnits: Map<String, String>
         ): List<NutrientIntakeEntity> {
             val structured = listOf(
@@ -219,8 +249,7 @@ class IntakeAggregator(
             )
             val out = ArrayList<NutrientIntakeEntity>(structured.size)
             for ((nutrientId, amount) in structured) {
-                if (amount <= 0.0) continue                    // 0 = unknown (entity KDoc)
-                if (nutrientId in coveredByIngredients) continue
+                if (amount <= 0.0) continue          // 0 = unknown (entity KDoc)
                 val unit = canonicalUnits[nutrientId] ?: continue
                 val canonical = Units.canonicalNutrientAmount(nutrientId, amount, null, unit) ?: continue
                 out += NutrientIntakeEntity(

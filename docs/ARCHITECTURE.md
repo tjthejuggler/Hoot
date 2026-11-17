@@ -426,6 +426,18 @@ Rules:
 - **Supplements**: labels like "Magnesium 400 mg" are parsed directly
   (regex + LLM assist) into `nutrientContributions` — no web lookup needed
   unless the compound is ambiguous (e.g. "magnesium citrate" → elemental mg).
+- **Tail option descriptions (composition credits, 2026-11-17)**: Tail
+  maintains a per-option nutrient section ("Iodine 150mcg", "Calcium 500mg,
+  Magnesium 200mg, …") exposed via `/v2/habits/{id}/labels`
+  (`option_descriptions`). The pills sync fetches it every pass and parses
+  each description into canonical-unit contributions AT MAPPING TIME
+  (`SupplementCompositionParser`) — zero LLM calls. Because Tail option
+  edits/renames are retroactive, the pills habit is ALWAYS full-pulled;
+  `ingestPreservingResolution` detects rows whose contributions/description/
+  dose changed (`supplementPayloadChanged`) and reports their days
+  (`supplementsUpdated`) so the ledger + snapshots are recomputed — a
+  description edit or the fix's first run refills the whole backlog
+  automatically.
 
 ---
 

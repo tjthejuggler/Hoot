@@ -158,7 +158,8 @@ class AppGraph(context: Context) {
         meals = meals,
         tailEntries = tailEntries,
         aggregator = intakeAggregator,
-        scope = appScope
+        scope = appScope,
+        nutrientDefinitions = nutrientDefinitions
     )
 
     /** OpenAI-compatible chat completions client (Inuit port). */

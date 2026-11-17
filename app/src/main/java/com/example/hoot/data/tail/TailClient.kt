@@ -115,6 +115,16 @@ class TailClient(context: Context) {
                     }
                 }
         }
+        // 5) Option descriptions (§3): does the first text habit answer a
+        //    labels query with a description column? (iodine-fix, 2026-11-17)
+        if (textHabit != null) {
+            queryOrNull(pkg, "$PATH_V2_HABITS/${Uri.encode(textHabit.habitId)}/labels")
+                ?.use { c ->
+                    if (c.columnIndex(COL_DESCRIPTION) >= 0) {
+                        caps = caps.copy(optionDescriptions = true)
+                    }
+                }
+        }
         caps
     }
 
@@ -141,6 +151,39 @@ class TailClient(context: Context) {
             }
         } ?: emptyList()
     }
+
+    // ── Option labels / descriptions (§3) ──────────────────────────────────
+
+    /**
+     * Option inventory of ONE text habit from `/v2/habits/{id}/labels`
+     * (feature `option_descriptions`). Empty when Tail does not expose the
+     * endpoint — pills ingestion then simply proceeds without composition
+     * data (the pre-fix behaviour), never fails the sync.
+     */
+    suspend fun fetchHabitLabels(pkg: String, habitId: String): List<TailLabel> =
+        withContext(Dispatchers.IO) {
+            val uri = buildString {
+                append(authority(pkg))
+                append(PATH_V2_HABITS)
+                append('/')
+                append(Uri.encode(habitId))
+                append("/labels")
+            }
+            queryOrNull(null, null, Uri.parse(uri))?.use { c ->
+                buildList {
+                    while (c.moveToNext()) {
+                        val text = c.columnString(COL_LABEL_TEXT) ?: continue
+                        add(
+                            TailLabel(
+                                labelId = c.columnString(COL_LABEL_ID),
+                                labelText = text,
+                                description = c.columnString(COL_DESCRIPTION)?.takeIf { it.isNotBlank() }
+                            )
+                        )
+                    }
+                }
+            } ?: emptyList()
+        }
 
     // ── Text entries ──────────────────────────────────────────────────────
 
@@ -335,7 +378,8 @@ class TailClient(context: Context) {
             v2Habits = features.any { it.contains("habits_v2") },
             fullTextHistory = features.any { it.contains("entries_full") },
             incremental = features.any { it.contains("entries_incremental") },
-            mealLogs = features.any { it.contains("meal_logs") }
+            mealLogs = features.any { it.contains("meal_logs") },
+            optionDescriptions = features.any { it.contains("option_descriptions") }
         )
     }
 
@@ -390,6 +434,11 @@ class TailClient(context: Context) {
         const val COL_HABIT_NAME = "habit_name"
         const val COL_ENTRY_TS = "entry_ts"
         const val COL_ENTRY_TEXT = "entry_text"
+
+        // v2 labels endpoint columns (§3 — option descriptions).
+        const val COL_LABEL_ID = "label_id"
+        const val COL_LABEL_TEXT = "label_text"
+        const val COL_DESCRIPTION = "description"
 
         /** v2 value-habit (counter) daily count column (Tail's COL_VALUE). */
         const val COL_VALUE = "value"

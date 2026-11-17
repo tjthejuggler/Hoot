@@ -197,6 +197,10 @@ interface SupplementDao {
     @Query("DELETE FROM supplements WHERE id = :id")
     suspend fun delete(id: String)
 
+    /** Bulk delete (legacy split-artifact cleanup, stack collapse 2026-11-17). */
+    @Query("DELETE FROM supplements WHERE id IN (:ids)")
+    suspend fun deleteAll(ids: List<String>)
+
     /** Manual-retry hook: give every unresolved row a fresh set of attempts. */
     @Query("UPDATE supplements SET resolveAttempts = 0 WHERE nutrientContributions = '[]' AND resolvedFoodId IS NULL")
     suspend fun resetResolveAttempts()

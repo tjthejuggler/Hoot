@@ -25,7 +25,14 @@ sealed interface TailSyncState {
         val waterInserted: Int = 0,
         val miscInserted: Int = 0,
         /** Existing rows whose Tail payload changed (hollow placeholder → enriched, 2026-09-23). */
-        val mealsUpdated: Int = 0
+        val mealsUpdated: Int = 0,
+        /**
+         * Existing supplement rows whose payload changed — chiefly the
+         * composition-contribution backfill from Tail option descriptions
+         * (iodine-fix, 2026-11-17). Drives the post-sync ledger recompute
+         * and resolver kick in the pipeline.
+         */
+        val supplementsUpdated: Int = 0
     ) : TailSyncState
 
     data class Error(val message: String) : TailSyncState

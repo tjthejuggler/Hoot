@@ -3,6 +3,7 @@ package com.example.hoot.data.tail
 import com.example.hoot.data.local.entity.TailEntryEntity
 import com.example.hoot.data.repository.TailEntryRepository
 import com.example.hoot.data.repository.MealRepository
+import com.example.hoot.data.repository.NutrientDefinitionRepository
 import com.example.hoot.data.repository.TailConfigRepository
 import com.example.hoot.data.local.SettingsRepository
 import com.example.hoot.domain.nutrition.IntakeAggregator
@@ -44,7 +45,9 @@ class TailSyncManager(
     private val meals: MealRepository,
     private val tailEntries: TailEntryRepository,
     private val aggregator: IntakeAggregator,
-    private val scope: CoroutineScope
+    private val scope: CoroutineScope,
+    /** Canonical units for parsing Tail option descriptions at mapping time. */
+    private val nutrientDefinitions: NutrientDefinitionRepository? = null
 ) {
     private val mutex = Mutex()
     private val _state = MutableStateFlow<TailSyncState>(TailSyncState.Idle)
@@ -80,6 +83,7 @@ class TailSyncManager(
                 var mealsInserted = 0
                 var mealsUpdated = 0
                 var supplementsInserted = 0
+                var supplementsUpdated = 0
                 var mealLogsUnavailable = false
                 var waterInserted = 0
                 var miscInserted = 0
@@ -136,14 +140,38 @@ class TailSyncManager(
                 }
 
                 // ── Pills habit ───────────────────────────────────────────
+                // ALWAYS full-pull (iodine-fix, 2026-11-17): Tail option
+                // descriptions — the per-serving nutrient section maintained
+                // in Tail's supplement editor — are RETROACTIVE (an edit or
+                // rename rewrites history) and the labels endpoint has no
+                // change cursor, so a `?after=` incremental pull would never
+                // re-serve rows whose composition credit just became
+                // available. Stable entry-id dedup keys keep the full pull
+                // idempotent; the ingest layer detects rows whose
+                // contributions/description/dose CHANGED and reports their
+                // days for the ledger recompute below (backlog refill).
                 val pillsHabit = cfg.pillsHabitName
+                var suppChangedDays: Set<String> = emptySet()
                 if (pillsHabit != null) {
-                    val history = tailClient.fetchFullHistory(pkg, pillsHabit, cfg.lastPillsSyncAt)
-                    val (rows, maxTs) = supplementEntities(history.entries, pillsHabit)
-                    val counts = meals.ingestPreservingResolution(emptyList(), rows)
+                    val labels = runCatching { tailClient.fetchHabitLabels(pkg, pillsHabit) }
+                        .onFailure { android.util.Log.w(TAG, "pills labels fetch failed: ${it.message}") }
+                        .getOrDefault(emptyList())
+                    val unitsById = nutrientUnits()
+                    val history = tailClient.fetchFullHistory(pkg, pillsHabit, null)
+                    val (rows, maxTs, overrideIds, pruneIds) =
+                        supplementEntities(history.entries, pillsHabit, labels, unitsById)
+                    val counts = meals.ingestPreservingResolution(
+                        emptyList(), rows, overrideIds = overrideIds, pruneIds = pruneIds
+                    )
                     supplementsInserted = counts.supplements
+                    supplementsUpdated = counts.supplementsUpdated
+                    suppChangedDays = counts.changedDays.toSet()
                     syncedIds += rows.map { it.id }
                     tailConfig.updateSyncCursor(null, maxTs)
+                    if (suppChangedDays.isNotEmpty()) {
+                        runCatching { aggregator.recomputeDays(suppChangedDays.toList()) }
+                            .onFailure { android.util.Log.e(TAG, "supplement ledger recompute failed", it) }
+                    }
                 }
 
                 // ── Water habit (v5) ──────────────────────────────────────
@@ -213,7 +241,8 @@ class TailSyncManager(
                     mealLogsUnavailable = mealLogsUnavailable,
                     waterInserted = waterInserted,
                     miscInserted = miscInserted,
-                    mealsUpdated = mealsUpdated
+                    mealsUpdated = mealsUpdated,
+                    supplementsUpdated = supplementsUpdated
                 )
                 _state.value = success
                 if (syncedIds.isNotEmpty()) tailConfig.rememberEntryIds(syncedIds)
@@ -250,6 +279,11 @@ class TailSyncManager(
             settings.markPillsSplitResyncDone()
         }
     }
+
+    /** Canonical nutrient units (id → unit); empty when defs are unavailable. */
+    private suspend fun nutrientUnits(): Map<String, String> =
+        runCatching { nutrientDefinitions?.definitionsAll().orEmpty().associate { it.id to it.unit } }
+            .getOrDefault(emptyMap())
 
     /** Starts the coroutine periodic loop (no-op when already running). */
     fun startPeriodicSync() {

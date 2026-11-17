@@ -39,8 +39,8 @@ class TailPillsMappingTest {
 
     @Test fun `re-running the same input is idempotent`() {
         val entries = listOf(entry("e1", "2026-09-19 08:00:00", 1_758_240_000_000, "iron, zinc, B-12"))
-        val first = supplementEntities(entries, "Took Pills").first
-        val second = supplementEntities(entries, "Took Pills").first
+        val first = supplementEntities(entries, "Took Pills").rows
+        val second = supplementEntities(entries, "Took Pills").rows
         assertEquals(first.map { it.id }, second.map { it.id })
         assertEquals(first, second)
     }

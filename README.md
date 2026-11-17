@@ -136,6 +136,72 @@ for no breaking changes to the existing v1 surface.
 
 ## Changelog
 
+### 2026-11-17 (13) — Tail is fact: daily calories/macros match Tail exactly
+
+- **Root cause (feedback "calories today differ between Hoot and Tail")**:
+  the intake ledger credited Tail's structured meal macros (kcal/protein/
+  carbs/fat) only as **gap-filler beneath Hoot's own ingredient estimates**
+  (2026-09-21 fill-missing semantics). Whenever the resolver's
+  gram-estimates produced different macros — a different serving guess, a
+  resolvable ingredient list, per-100 g profile math — Hoot's daily totals
+  silently diverged from the numbers Tail itself displays, for calories AND
+  protein/carbs/fat alike.
+- **Fix — precedence inversion in
+  [`IntakeAggregator`](app/src/main/java/com/example/hoot/domain/nutrition/IntakeAggregator.kt)**:
+  meal-row structured macros are now credited **unconditionally** (they are
+  Tail's facts), and the ingredient loop **skips exactly those nutrient ids**
+  (`structuredMacroNutrientIds`) so nothing double-counts. Ingredients keep
+  enriching every nutrient Tail doesn't assert (fiber, iron, micronutrients,
+  …) — Hoot builds on Tail's facts instead of second-guessing them. Meals
+  without structured macros (v1 text fallback, manual entry) keep
+  ingredient-driven aggregation; partial rows (kcal-only hollow analyses)
+  stay ingredient-driven for the missing macros.
+- **Self-healing**: the per-launch full ledger recompute
+  (`NutritionPipeline` self-heal) rewrites every known day on next app
+  start, so history converges to Tail's numbers with no user action.
+- Pinned by
+  [`IntakeAggregatorStructuredMacroTest`](app/src/test/java/com/example/hoot/domain/nutrition/IntakeAggregatorStructuredMacroTest.kt)
+  (TAIL-IS-FACT precedence + partial-macro enrichment).
+
+### 2026-11-17 (12) — Tail supplement composition credits (iodine fix)
+
+- **Root cause (iodine-drops feedback)**: the nutrient section of Tail's
+  supplement editor is the **pill catalog** (name → per-serving composition
+  like "Iodine 150mcg", "Calcium 500mg, Magnesium 200mg, …"). Tail's
+  provider never exposed it — the `/v2/habits/{id}/labels` endpoint only
+  served `textInputOptionDescriptions`, an empty store for pill-log habits —
+  and Hoot synced just the bare log line. A label like "Iodine drops"
+  carries no dose to parse, so the free label path failed, the LLM fallback
+  burned its attempts, and Today/History showed **0 for every nutrient
+  supplied only through that section** across the whole history. The fix is
+  two-sided: Tail now merges the effective pill catalog
+  (DEFAULT_CATALOG + user edits) into the labels endpoint's rows, and Hoot
+  reads it every pills sync.
+- **Fix**: the pills sync now fetches the labels inventory every pass and
+  parses each matched option's description into canonical-unit
+  `nutrientContributions` at mapping time
+  ([`SupplementCompositionParser`](app/src/main/java/com/example/hoot/domain/nutrition/SupplementCompositionParser.kt))
+  — zero LLM calls, tolerant matching (case/punctuation drift, brand
+  suffixes, DHA+EPA summing into omega-3, µg/IU folding). Unmatched items
+  keep the legacy label-parse→LLM path.
+- **Catalog-aware itemization (anti-over-credit)**: catalog pills whose
+  NAME is itself a list ("Calcium, Magnesium, Zinc, D3, K2, Copper, Boron")
+  are matched WHOLE-LINE (newline-first split, exact normalized match) —
+  the legacy comma-split would have shredded the stack into 7 items and
+  credited the panel 7×. The mapping also returns a cleanup plan: stale
+  pre-fix positional rows (`#index`) are pruned/overridden so the collapsed
+  stack never double-credits.
+- **Backlog refill, automatic**: Tail catalog edits are retroactive, so the
+  pills habit is now ALWAYS full-pulled (stable ids keep it idempotent);
+  `ingestPreservingResolution` detects rows whose contributions/description/
+  dose changed (`supplementPayloadChanged` → `supplementsUpdated`, plus the
+  prune/override plan) and the sync recomputes those days' ledgers + score
+  snapshots immediately — the whole supplement history refills on the first
+  sync after the fix, and any later Tail-side catalog edit re-credits
+  history on the next pass.
+- Tests: `SupplementCompositionParserTest`, `TailPillsCompositionMappingTest`
+  (27 new cases).
+
 ### 2026-09-27 (11) — Permanent food-knowledge base + expanded smart-pick details
 
 - **New `food_knowledge` table (Room v6→v7, additive)**: every food the

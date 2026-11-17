@@ -140,13 +140,17 @@ class MealRepository(
      * [mealsUpdated] counts EXISTING rows whose Tail payload changed (Tail
      * fills meal placeholders in-place after its async analysis — the
      * hollow "Meal (0 kcal)" row is rewritten with title/macros/ingredients
-     * and an EARLIER canonical timestamp); [changedDays] lists the days
-     * whose ledger must be recomputed as a result.
+     * and an EARLIER canonical timestamp); [supplementsUpdated] counts
+     * EXISTING supplement rows whose payload changed — chiefly unresolved
+     * rows that just received composition contributions from a Tail option
+     * description (iodine-fix backfill, 2026-11-17); [changedDays] lists
+     * the days whose ledger must be recomputed as a result.
      */
     data class IngestCounts(
         val meals: Int,
         val supplements: Int,
         val mealsUpdated: Int = 0,
+        val supplementsUpdated: Int = 0,
         val changedDays: List<String> = emptyList()
     )
 
@@ -171,15 +175,49 @@ class MealRepository(
     suspend fun ingestPreservingResolution(
         meals: List<MealEntity>,
         supplements: List<SupplementEntity>,
-        ingredients: List<IngredientEntity> = emptyList()
+        ingredients: List<IngredientEntity> = emptyList(),
+        overrideIds: Set<String> = emptySet(),
+        pruneIds: List<String> = emptyList()
     ): IngestCounts {
         var newSupplements = 0
+        var updatedSupplements = 0
+        val suppChangedDays = LinkedHashSet<String>()
+        if (pruneIds.isNotEmpty()) {
+            // Legacy split-artifact removal (stack collapse, 2026-11-17):
+            // delete pre-fix `#index` fragments the new mapping no longer
+            // produces; their days re-aggregate without them.
+            val pruned = supplementDao.byIds(pruneIds)
+            for (row in pruned) row.day.let(suppChangedDays::add)
+            if (pruned.isNotEmpty()) supplementDao.deleteAll(pruned.map { it.id })
+        }
         if (supplements.isNotEmpty()) {
             val ids = supplements.map { it.id }
             val existing = supplementDao.byIds(ids).associateBy { it.id }
             newSupplements = supplements.count { it.id !in existing }
             val merged = supplements.map { fresh ->
-                existing[fresh.id]?.let { mergePreservingResolved(fresh, it) } ?: fresh
+                val old = existing[fresh.id]
+                when {
+                    old == null -> fresh
+                    // Override rows (stack collapse): the fresh mapping is
+                    // authoritative — stale resolution on a positional id
+                    // whose MEANING changed would double-credit the day.
+                    fresh.id in overrideIds -> {
+                        updatedSupplements++
+                        old.day.let(suppChangedDays::add)
+                        fresh
+                    }
+                    else -> {
+                        val candidate = mergePreservingResolved(fresh, old)
+                        // Composition backfill: an UNRESOLVED row receiving
+                        // contributions (or a changed description/dose) is a
+                        // payload change — its day's ledger must be recomputed.
+                        if (supplementPayloadChanged(old, candidate)) {
+                            updatedSupplements++
+                            old.day.let(suppChangedDays::add)
+                        }
+                        candidate
+                    }
+                }
             }
             supplementDao.upsertAll(merged)
         }
@@ -221,10 +259,12 @@ class MealRepository(
                 }
             }
         }
+        changedDays += suppChangedDays
         return IngestCounts(
             meals = newMeals,
             supplements = newSupplements,
             mealsUpdated = updatedMeals,
+            supplementsUpdated = updatedSupplements,
             changedDays = changedDays.toList()
         )
     }
@@ -253,6 +293,21 @@ class MealRepository(
                 existing.healthNotes != fresh.healthNotes ||
                 existing.timestamp != fresh.timestamp ||
                 existing.day != fresh.day
+
+        /**
+         * True when a re-served Tail supplement row carries DIFFERENT
+         * resolution-relevant content than the stored row (pure, JVM-testable).
+         * The interesting case is an UNRESOLVED stored row ("[]") whose fresh
+         * mapping now carries composition contributions parsed from a Tail
+         * option description (iodine-fix backfill) — the merged row must be
+         * counted as updated so the affected day's ledger is recomputed.
+         * Dose backfill (null → parsed typed dose) counts too.
+         */
+        fun supplementPayloadChanged(existing: SupplementEntity, merged: SupplementEntity): Boolean =
+            existing.nutrientContributions != merged.nutrientContributions ||
+                existing.description != merged.description ||
+                existing.doseAmount != merged.doseAmount ||
+                existing.doseUnit != merged.doseUnit
 
         /**
          * Pure merge: when an existing row already carries resolution state

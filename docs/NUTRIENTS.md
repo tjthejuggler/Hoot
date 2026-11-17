@@ -151,14 +151,26 @@ aggregator always converts to canonical before writing `NutrientIntakeLog`.
 
 ## 7. Daily Aggregation Logic
 
+**Tail is fact** (feedback 2026-11-17): when a meal row carries structured
+macros (Tail v2 meal rows / v6 in-app captures), those kcal/protein/carbs/fat
+are credited exactly as Tail reports them — Hoot's ingredient estimates never
+override or add to them. Ingredient resolution only enriches the nutrients
+Tail doesn't explicitly give (fiber, micronutrients, …), so Hoot's daily
+calories and macros always match Tail's numbers.
+
 ```
 for each day D, nutrient N:
     intake(D, N) = Σ over meals M eaten on D:
-                       Σ over ingredients I in M:
-                           gramsEstimate(I) / profile.perAmount
-                           × convertToCanonical(profile.valuesJson[N])
+                       structuredMacro(M, N)              [FACT: Tail's number,
+                                                             when M carries it]
+                     + Σ over ingredients I in M:         [only when Tail does
+                           gramsEstimate(I) / perAmount    NOT assert N —
+                           × convertToCanonical(            enrichment]
+                                profile.valuesJson[N])
                  + Σ over supplements S taken on D:
                        convertToCanonical(contribution S→N)
+                       [energy macros excluded — pills credit
+                        micronutrients only]
 ```
 
 Rules and edge cases:

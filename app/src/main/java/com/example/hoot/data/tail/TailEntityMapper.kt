@@ -6,6 +6,8 @@ import com.example.hoot.data.local.entity.SupplementEntity
 import com.example.hoot.data.local.entity.TailEntryEntity
 import com.example.hoot.domain.nutrition.DayKeys
 import com.example.hoot.domain.nutrition.IngredientParser
+import com.example.hoot.domain.nutrition.SupplementCompositionParser
+import com.example.hoot.domain.nutrition.SupplementLabelParser
 import com.example.hoot.domain.nutrition.SupplementListSplitter
 import com.example.hoot.domain.nutrition.parseWaterAmount
 
@@ -101,13 +103,54 @@ internal fun textMealEntities(
  *  - items 1..n append `#<index>` (deterministic → idempotent upserts).
  * `label`/`rawText` hold the individual item; `timestamp`/`day`/habit
  * provenance are shared with the originating entry.
+ *
+ * Composition credits (iodine-drops bug, 2026-11-17): [labels] carries the
+ * pills habit's option descriptions — the per-serving nutrient section the
+ * user maintains in Tail (§3 `option_descriptions`). When an item matches a
+ * described option, its description is stored AND parsed by
+ * [SupplementCompositionParser] into canonical-unit `nutrientContributions`
+ * right at mapping time — zero LLM calls, zero resolver queue, works for the
+ * whole backlog on the next full pull. Items without a described option keep
+ * the legacy unresolved mapping (label/typed-dose parse → LLM as before).
  */
+/**
+ * Mapping result for the pills habit. [component1]/[component2] keep the
+ * historical `(rows, maxTs)` destructuring; [overrideIds]/[pruneIds] carry
+ * the legacy-split cleanup plan (see [supplementEntities]).
+ */
+data class SupplementMapResult(
+    val rows: List<SupplementEntity>,
+    val maxTs: Long?,
+    /** Positional row ids whose fresh payload must REPLACE stored resolution (stack-collapse). */
+    val overrideIds: Set<String> = emptySet(),
+    /** Legacy `#index` sibling rows to DELETE (pre-fix split artifacts). */
+    val pruneIds: List<String> = emptyList()
+)
+
 internal fun supplementEntities(
     entries: List<TailTextEntry>,
-    habitName: String
-): Pair<List<SupplementEntity>, Long?> {
+    habitName: String,
+    labels: List<TailLabel> = emptyList(),
+    unitsById: Map<String, String> = emptyMap()
+): SupplementMapResult {
+    // label text (normalized) → parsed contributions; only options whose
+    // description yields at least one tracked nutrient enter the map.
+    val compositionByLabel = if (labels.isEmpty()) emptyMap() else
+        labels.mapNotNull { l ->
+            SupplementCompositionParser.contributionsJson(l.description ?: "", unitsById)
+                ?.let { normalizeOptionText(l.labelText) to it }
+        }.toMap()
+    val descriptionByLabel = labels
+        .filter { it.description != null }
+        .associate { normalizeOptionText(it.labelText) to it.description }
+    val originalByText = labels.associate { normalizeOptionText(it.labelText) to it.labelText }
+    val compositionEnabled = compositionByLabel.isNotEmpty()
+
     var maxTs: Long? = null
     val rows = mutableListOf<SupplementEntity>()
+    val overrideIds = mutableSetOf<String>()
+    val pruneIds = mutableListOf<String>()
+
     for (e in entries) {
         if (e.timestampMs <= 0) continue
         if (maxTs == null || e.timestampMs > maxTs) maxTs = e.timestampMs
@@ -115,28 +158,85 @@ internal fun supplementEntities(
         // back through Tail's text log — skipping prevents duplicate rows
         // (Hoot already stored each item at capture time).
         if (EchoRegistry.isKnownTextEcho(habitName, e.timestampMs)) continue
-        val items = SupplementListSplitter.split(e.text)
-        if (items.isEmpty()) continue
         val baseKey = entryKey("pills", e.entryId, habitName, e.timestampRaw)
+
+        // Itemization (catalog-aware, 2026-11-17): Tail pill-log submissions
+        // are '\n'-joined lines where ONE line can BE a catalog pill whose
+        // name is itself a comma list ("Calcium, Magnesium, Zinc, D3, K2,
+        // Copper, Boron"). Split NEWLINE-first and whole-line-match each
+        // against the catalog; unmatched lines fall back to the legacy
+        // [SupplementListSplitter] (free text). The plain legacy split of
+        // the whole text is kept when no compositions are known, so
+        // pre-fix row ids stay byte-stable in that mode.
+        var hadWholeLineCredit = false
+        val items: List<String> = if (!compositionEnabled) {
+            SupplementListSplitter.split(e.text)
+        } else {
+            e.text.split('\n')
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+                .flatMap { line ->
+                    val key = normalizeOptionText(line)
+                    if (key in compositionByLabel) {
+                        hadWholeLineCredit = true
+                        listOf(originalByText[key] ?: line)
+                    } else {
+                        SupplementListSplitter.split(line)
+                    }
+                }
+        }
+        if (items.isEmpty()) continue
+
+        // Per-item credits are EXACT-only: containment matching would
+        // over-credit (every split mineral of a stack line matching the
+        // stack's own catalog entry). Items keep their typed-dose parse and
+        // fall through to the resolver when there is no exact hit.
+        val creditMap: Map<String, String> =
+            items.mapNotNull { item ->
+                val key = normalizeOptionText(item)
+                compositionByLabel[key]?.let { key to it }
+            }.toMap()
+
         items.forEachIndexed { index, item ->
+            val key = normalizeOptionText(item)
+            val composition = creditMap[key]
+            val typedDose = SupplementLabelParser.parse(item)
             rows += SupplementEntity(
                 id = if (index == 0) baseKey else "$baseKey#$index",
                 label = item.take(80),
-                description = null,
+                description = descriptionByLabel[key],
                 resolvedFoodId = null,
-                doseAmount = null,
-                doseUnit = null,
-                nutrientContributions = "[]",
+                doseAmount = typedDose?.doseAmount,
+                doseUnit = typedDose?.doseUnit,
+                nutrientContributions = composition ?: "[]",
                 tailHabitName = habitName,
                 timestamp = e.timestampMs,
                 day = dayKey(e.timestampMs),
                 rawText = item,
                 source = "tail"
             )
+            if (hadWholeLineCredit) overrideIds += rows.last().id
+        }
+
+        // Legacy split-artifact cleanup: the pre-fix mapping split the WHOLE
+        // text (commas included), so a stack entry produced N positional
+        // rows where the catalog-aware mapping produces fewer (and better)
+        // ones. Positional ids the new mapping no longer occupies are
+        // deleted; occupied ones are OVERRIDE rows (fresh payload replaces
+        // whatever junk resolution the legacy fragments carry) — otherwise
+        // the collapsed stack would double-credit against its own leftover
+        // per-mineral rows.
+        if (compositionEnabled) {
+            val legacyCount = SupplementListSplitter.split(e.text).size
+            for (i in items.size until legacyCount) pruneIds += "$baseKey#$i"
         }
     }
-    return rows to maxTs
+    return SupplementMapResult(rows, maxTs, overrideIds, pruneIds)
 }
+
+/** Lowercase + whitespace/punctuation collapse for tolerant option matching. */
+internal fun normalizeOptionText(s: String): String =
+    s.lowercase().replace(Regex("[^a-z0-9\\s]"), " ").replace(Regex("\\s+"), " ").trim()
 
 /** Stable dedup key: entry id when Tail ships one (R5), habit+timestamp fallback otherwise. */
 internal fun entryKey(kind: String, entryId: String?, habitName: String, tsKey: String): String =

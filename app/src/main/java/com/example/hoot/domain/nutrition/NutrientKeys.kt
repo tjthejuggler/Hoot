@@ -40,7 +40,12 @@ object NutrientKeys {
             "polyunsaturated_fat", "pufa", "fat_polyunsaturated"
         ),
         "omega3_epa_dha" to setOf(
-            "omega3_epa_dha", "omega_3_epa_dha", "omega_3", "omega3", "epa_dha", "dha_epa"
+            "omega3_epa_dha", "omega_3_epa_dha", "omega_3", "omega3", "epa_dha", "dha_epa",
+            // Bare oil fractions — Tail pill descriptions carry the per-serving
+            // panel as "DHA 350mg, EPA 180mg"; both must fold (and SUM) into the
+            // same canonical id (iodine-fix companion, 2026-11-17). "_h_" forms
+            // are what normalize() produces for the ALL-CAPS spellings.
+            "dha", "epa", "d_h_a", "e_p_a"
         ),
         "omega3_ala" to setOf("omega3_ala", "omega_3_ala", "ala", "linolenic_acid"),
         "omega6_la" to setOf("omega6_la", "omega_6_la", "omega_6", "omega6", "linoleic_acid"),

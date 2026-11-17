@@ -35,6 +35,21 @@ data class TailTextEntry(
     val value: Double? = null
 )
 
+/**
+ * One label/option row of a text habit (v2 `/v2/habits/{id}/labels`, feature
+ * `option_descriptions`): the option inventory with Tail's per-option
+ * description — for the pills habit this is the user-maintained per-serving
+ * nutrient composition ("Iodine 150mcg", "Calcium 500mg, Magnesium 200mg, …"),
+ * the data Hoot previously never read (iodine-drops bug, 2026-11-17).
+ */
+data class TailLabel(
+    val labelId: String?,
+    /** Option text exactly as it appears in the pills log ("Iodine drops"). */
+    val labelText: String,
+    /** Per-serving composition / notes; null when the option has none. */
+    val description: String?
+)
+
 /** One meal-log record (Tail's internal `MealLog` shape, v2 `/v2/habits/{id}/entries`). */
 data class TailMealEntry(
     val entryId: String,
@@ -57,7 +72,9 @@ data class TailCapabilities(
     val v2Habits: Boolean = false,
     val fullTextHistory: Boolean = false,
     val incremental: Boolean = false,
-    val mealLogs: Boolean = false
+    val mealLogs: Boolean = false,
+    /** `/v2/habits/{id}/labels` exposes option descriptions (§3). */
+    val optionDescriptions: Boolean = false
 )
 
 /** Result of [TailClient.fetchMealLogs] — "unavailable" is an expected state, not a crash. */

@@ -51,8 +51,16 @@ internal class NutritionPipeline(
         scope.launch {
             tailSync.syncState.collect { state ->
                 val ingested = state as? TailSyncState.Success ?: return@collect
+                // Composition backfill (iodine-fix, 2026-11-17): updated
+                // supplement rows already got their ledger recomputed inside
+                // the sync; snapshots still need a refresh, and any rows the
+                // labels pass could NOT credit stay queued for the resolver.
+                if (ingested.supplementsUpdated > 0) {
+                    runCatching { scoreSnapshotter.recomputeAll() }
+                        .onFailure { android.util.Log.e(TAG, "supplement backfill snapshot refresh failed", it) }
+                }
                 if (ingested.mealsInserted > 0 || ingested.supplementsInserted > 0 ||
-                    ingested.mealsUpdated > 0
+                    ingested.mealsUpdated > 0 || ingested.supplementsUpdated > 0
                 ) {
                     // Peer-repair FIRST: newly-synced rows whose identical
                     // label already resolved elsewhere (daily brand pills)
