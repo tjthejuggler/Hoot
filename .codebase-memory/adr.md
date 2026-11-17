@@ -1,16 +1,19 @@
-# ADR: Cache-first Home startup (stale-while-revalidate, 2026-11-16)
+# ADR: Symptom keys merge only on literal identity
+
+**Date:** 2026-11-17
+**Status:** Accepted
 
 ## Context
-Fresh launches of the Home dashboard could show the loading state for a very long time, sometimes seemingly indefinitely. Root causes: (1) the first `HomeUiState` emission waits on the full pipeline — score recompute, `computeSymptoms` (one `dailyTotalsForWindow` GROUP BY per nutrient per window ≈ 111 scans), and `SmartFoodProvider.cacheCandidates` (one `profileForFood` query per food ≈ hundreds of N+1 round-trips); (2) startup self-heals in `NutritionPipeline.start()` rewrite the intake ledger concurrently, invalidating the Room observe-flows, so `flatMapLatest` cancels and restarts the in-flight compute repeatedly; (3) nothing from the previous session was shown while all this ran.
+User feedback: the internal LLM/research flow appeared to rewrite "Dry / rough skin" into "Pale skin". Root cause was NOT the LLM itself but the deterministic `SymptomCanonicalizer` invoked after every research pass and at every app start (`NutritionPipeline.start()`). Its fuzzy rules — (b) token Jaccard ≥ 0.45 and (c) shared rare trailing head token (≤ 2 occurrences) — merged merely-similar symptoms. Seed catalog has exactly `dry_skin` and `pale_skin` ending in "skin" → rule (c) merged them, with `pale_skin` winning on nutrient count. The same rule shape threatened `bone_pain`/`joint_pain` (before "muscle_pain" seeded) and rule (b) threatened `dry_eyes`/`dry_skin`.
 
 ## Decision
-1. **Stale-while-revalidate cache**: every computed `HomeUiState` is persisted to `filesDir/home_state_cache/home_ui_state.json` via `HomeStateCache` (org.json codec, atomic tmp+rename). On collector start the cached state is emitted first (`fromCache=true, loading=false`); the live flow continues in the background and its first emission replaces the cache wholesale. UI shows a thin "Updating from your latest logs…" hint instead of a blocking spinner when serving cache.
-2. **Batched deficiency windows**: `computeSymptoms` pre-fetches each window (30/90/365-day) ONCE and slices in memory — 3 queries total instead of ~111; output identical.
-3. **Bulk profile read**: `ProfileDao.all()` → `FoodRepository.profilesAll()` → `NutrientRepository.profilesAll()`; `cacheCandidates` now joins foods against one prefetched map instead of per-food queries.
-4. Only LIVE results (`!fromCache && !loading`) rewrite the cache file; corrupt/blank cache payloads are rejected (null) and fall back to the old loading behavior.
+1. `SymptomCanonicalizer.sameSymptom()` now folds keys ONLY on literal identity: one significant-token set is a subset of the other AND both keys share the same trailing head token ("dry_rough_skin" → "dry_skin"). Fuzzy rules (b) and (c) deleted.
+2. A tiny curated `LITERAL_SYNONYMS` table handles clinically identical phrasings that share no tokens ("loss_of_appetite" ≡ "poor_appetite", "impaired_wound_healing" ≡ "slow_healing"). It fires only when the canonical target key exists in the same kind group.
+3. Similar-but-different symptoms NEVER merge (dry/rough skin vs pale skin: texture vs color). When in doubt, distinct.
+4. One-time repair: `NutrientSymptomRepository.repairOverMergedKeys()` + row-scoped DAO `renameSymptomKeyForDisplay` move any row whose seed `displayName` identifies a different symptom than its current key back to the true key (old renames preserved displayName, making the corruption deterministically detectable). Runs at startup before canonicalization; idempotent.
+5. `NutrientResearcher` prompts (system + user) now explicitly forbid combining/broadening symptoms, require reusing the exact known key for literally-identical symptoms, and demand separate keys for merely-similar ones.
 
 ## Consequences
-- Home is instantly usable on launch whenever a previous session computed anything; background refresh swaps sections in as they land.
-- The cache is display-only: it never gates writes, resolution, or scoring; a stale cache cannot corrupt data.
-- `HomeUiState` gained a `fromCache` field (UI-hint only); codec is unit-tested (`HomeStateCacheTest` round-trips every nested model).
-- Symptom ranking values are unchanged (same windows, same math) — only the number of SQL queries dropped.
+- Symptom chips stay distinct; grouping only collapses true duplicates.
+- Future merge candidates must be added explicitly to `LITERAL_SYNONYMS` (code review), not inferred.
+- Regression tests in `SymptomCanonicalizerTest` pin the dry-skin/pale-skin, bone/joint-pain, dry-eyes/dry-skin and head-mismatch cases.

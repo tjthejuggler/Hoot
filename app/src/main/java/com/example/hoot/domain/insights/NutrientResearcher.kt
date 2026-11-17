@@ -199,6 +199,19 @@ Find what is MISSING${if (wantSymptoms && wantFoods) "" else if (wantSymptoms) "
 Rules: max 6 deficiency + 4 excess symptoms (only well-established, textbook
 associations; confidence reflects strength of evidence); max 6 foods that are
 genuinely rich in $name and ABSENT from the known list; common food names.
+
+CRITICAL SYMPTOM-KEY RULES:
+1. Each key must name EXACTLY ONE symptom. NEVER combine, broaden, or
+   generalize two different symptoms into one key.
+2. If a new symptom is LITERALLY the same thing as a known key (pure
+   rephrasing, e.g. "dry skin" for known key "dry_skin"), reuse the EXACT
+   known key string — do not invent a new one.
+3. If a symptom is merely SIMILAR to, related to, or often co-occurs with a
+   known one but is a DIFFERENT symptom (e.g. dry/rough skin vs pale skin:
+   texture vs color; bone pain vs joint pain: different tissues), it MUST
+   get its own SEPARATE key. Do NOT lump it into the similar known key.
+4. When in doubt whether two descriptions are the same symptom, treat them
+   as DIFFERENT symptoms and use separate keys.
 """.trimIndent()
     }
 
@@ -209,6 +222,12 @@ genuinely rich in $name and ABSENT from the known list; common food names.
         private const val SYSTEM_PROMPT = """You are a nutrition-science research assistant.
 You return ONLY compact, valid JSON with well-established, textbook nutrient
 knowledge (NIH/WHO-level evidence). Never invent exotic associations; when
-unsure, omit the entry."""
+unsure, omit the entry.
+
+You are STRICTLY FORBIDDEN from merging or broadening symptoms: every
+symptom key you emit must describe exactly ONE distinct symptom. Distinct
+symptoms (dry/rough skin vs pale skin, bone pain vs joint pain, fatigue vs
+low mood) must NEVER be folded into one shared key — a key may only be
+reused for a literally identical symptom phrased differently."""
     }
 }

@@ -134,9 +134,22 @@ internal class NutritionPipeline(
         scope.launch {
             runCatching { symptomAssociations.ensureSeeded() }
                 .onFailure { android.util.Log.e(TAG, "symptom seed fill failed", it) }
+            // Overmerge repair (feedback 2026-11-17): the old fuzzy
+            // canonicalizer folded DISTINCT symptoms into one key
+            // (dry/rough skin → "pale_skin"). Rows kept their seed
+            // displayName, so this moves any mis-keyed row back to the
+            // symptom its display identifies. Runs BEFORE canonicalization
+            // and is idempotent.
+            runCatching {
+                val repaired = symptomAssociations.repairOverMergedKeys()
+                if (repaired > 0) {
+                    android.util.Log.i(TAG, "symptom overmerge repair fixed $repaired keys")
+                }
+            }.onFailure { android.util.Log.e(TAG, "symptom overmerge repair failed", it) }
             // Grouping self-heal (feedback 2026-11-16): fold duplicate
             // symptom keys ("dry_itchy_skin" → "dry_skin") once per launch;
-            // idempotent — a canonical catalog plans zero renames.
+            // idempotent — a canonical catalog plans zero renames. Only
+            // LITERALLY identical symptoms fold (2026-11-17 tightening).
             runCatching {
                 val renames = symptomAssociations.canonicalizeKeys()
                 if (renames.isNotEmpty()) {

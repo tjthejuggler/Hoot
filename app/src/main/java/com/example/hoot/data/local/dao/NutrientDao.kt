@@ -131,6 +131,20 @@ interface NutrientSymptomDao {
     /** Fold duplicate symptom keys into their canonical group (grouping fix). */
     @Query("UPDATE nutrient_symptom SET symptomKey = :toKey WHERE symptomKey = :fromKey AND kind = :kind")
     suspend fun renameSymptomKey(fromKey: String, toKey: String, kind: String)
+
+    /**
+     * Row-scoped key repair (overmerge fix, 2026-11-17): moves ONLY rows
+     * whose displayName identifies a different seed symptom than their
+     * current key (e.g. key "pale_skin" + display "Dry / rough skin"),
+     * leaving legit rows on the same key untouched.
+     */
+    @Query(
+        "UPDATE nutrient_symptom SET symptomKey = :toKey " +
+            "WHERE symptomKey = :fromKey AND kind = :kind AND displayName = :displayName"
+    )
+    suspend fun renameSymptomKeyForDisplay(
+        fromKey: String, toKey: String, kind: String, displayName: String
+    )
 }
 
 /** DAO for [LookupCacheEntity] — first stop of the resolution pipeline. */

@@ -44,8 +44,8 @@ class NutrientSymptomRepository(
     /**
      * Canonicalization (grouping feedback, 2026-11-16): folds duplicate
      * symptom keys into their dominant group via [SymptomCanonicalizer]
-     * (deterministic token rules — same-meaning keys only, same-kind only).
-     * Returns the applied renames (empty when already canonical).
+     * (deterministic token rules — literal same-symptom only, same-kind
+     * only). Returns the applied renames (empty when already canonical).
      */
     suspend fun canonicalizeKeys(): List<SymptomCanonicalizer.Rename> {
         val rows = dao.all()
@@ -63,5 +63,30 @@ class NutrientSymptomRepository(
         val renames = SymptomCanonicalizer.plan(infos)
         for (r in renames) dao.renameSymptomKey(r.fromKey, r.toKey, r.kind)
         return renames
+    }
+
+    /**
+     * One-time repair for over-merged keys (feedback 2026-11-17): the old
+     * fuzzy canonicalizer folded DISTINCT symptoms together (dry/rough skin
+     * into "Pale skin", bone pain into joint pain). The rename kept each
+     * row's original seed displayName, so any row whose display belongs to
+     * a DIFFERENT seed symptom than its current key is moved back to that
+     * symptom's true key — row-scoped, so legitimately-keyed rows on the
+     * same key are untouched. Idempotent.
+     */
+    suspend fun repairOverMergedKeys(): Int {
+        val rows = dao.all()
+        if (rows.isEmpty()) return 0
+        val keyForDisplay = SymptomSeed.allKeys().entries.associate { (k, v) -> v to k }
+        var repaired = 0
+        val seen = HashSet<Triple<String, String, String>>()  // fromKey→toKey→display
+        for (row in rows) {
+            val trueKey = keyForDisplay[row.displayName] ?: continue
+            if (trueKey == row.symptomKey) continue
+            if (!seen.add(Triple(row.symptomKey, trueKey, row.displayName))) continue
+            dao.renameSymptomKeyForDisplay(row.symptomKey, trueKey, row.kind, row.displayName)
+            repaired++
+        }
+        return repaired
     }
 }

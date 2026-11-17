@@ -6,8 +6,10 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * SymptomCanonicalizer: fold same-meaning keys ("dry_itchy_skin" →
- * "dry_skin"), never merge distinct symptoms, never cross kinds.
+ * SymptomCanonicalizer: fold keys that are LITERALLY the same symptom
+ * ("dry_itchy_skin" → "dry_skin"), never merge distinct symptoms, never
+ * cross kinds. Regression guards for the 2026-11-17 overmerge feedback:
+ * the old fuzzy rules folded "dry_skin" into "pale_skin".
  */
 class SymptomCanonicalizerTest {
 
@@ -89,8 +91,9 @@ class SymptomCanonicalizerTest {
         assertTrue(SymptomCanonicalizer.plan(applied).isEmpty())
     }
 
-    @Test fun `shared head only merges when rare`() {
-        // "pain" head appears 3× (bone, joint, muscle) → not rare → no merge.
+    @Test fun `shared head never merges by itself`() {
+        // Head-token co-occurrence is NOT evidence of sameness — distinct
+        // symptoms must stay distinct regardless of how rare the head is.
         val plan = SymptomCanonicalizer.plan(
             listOf(
                 info("bone_pain", 2), info("joint_pain", 2), info("muscle_pain", 2),
@@ -99,5 +102,68 @@ class SymptomCanonicalizerTest {
         )
         assertFalse(plan.any { it.toKey == "joint_pain" && it.fromKey == "joint_stiffness" })
         assertFalse(plan.any { it.fromKey == "bone_pain" })
+    }
+
+    // ---- Regression guards (feedback 2026-11-17): distinct-symptom overmerges.
+
+    @Test fun `dry skin never merges into pale skin`() {
+        // The reported bug: "Dry / rough skin" (dry_skin) was folded into
+        // "Pale skin" (pale_skin) because both end in "skin". Texture and
+        // color are DIFFERENT symptoms — must never merge, in either
+        // direction, regardless of nutrient counts.
+        val plan = SymptomCanonicalizer.plan(
+            listOf(
+                info("pale_skin", nutrients = 5, seed = true),
+                info("dry_skin", nutrients = 2, seed = true)
+            )
+        )
+        assertTrue(plan.isEmpty())
+    }
+
+    @Test fun `rare shared head alone never merges two keys`() {
+        // Exactly two keys ending in "pain" — the old rule (c) merged this
+        // shape; bone pain and joint pain are distinct symptoms.
+        val plan = SymptomCanonicalizer.plan(
+            listOf(info("bone_pain", 4, seed = true), info("joint_pain", 1))
+        )
+        assertTrue(plan.isEmpty())
+    }
+
+    @Test fun `dry skin and dry eyes never merge`() {
+        // Shared qualifier "dry", different head/body — distinct symptoms.
+        val plan = SymptomCanonicalizer.plan(
+            listOf(info("dry_eyes", 3, seed = true), info("dry_skin", 2, seed = true))
+        )
+        assertTrue(plan.isEmpty())
+    }
+
+    @Test fun `subset requires matching head token`() {
+        // Identical token SETS but different heads ("skin_dry" vs
+        // "dry_skin") stay separate: word order carries the head meaning.
+        val plan = SymptomCanonicalizer.plan(
+            listOf(info("dry_skin", 3, seed = true), info("skin_dry", 1))
+        )
+        assertTrue(plan.isEmpty())
+    }
+
+    @Test fun `pale skin does not absorb dry rough skin variants`() {
+        // Even with pale_skin dominant, dry/rough-skin variants must NOT
+        // fold into it — they are not the same symptom.
+        val plan = SymptomCanonicalizer.plan(
+            listOf(
+                info("pale_skin", nutrients = 6, seed = true),
+                info("dry_skin", nutrients = 2, seed = true),
+                info("dry_rough_skin", nutrients = 1)
+            )
+        )
+        // dry_rough_skin folds into dry_skin (literal variant), NOT pale_skin.
+        assertTrue(plan.any { it.fromKey == "dry_rough_skin" && it.toKey == "dry_skin" })
+        assertFalse(plan.any { it.toKey == "pale_skin" })
+        assertFalse(plan.any { it.fromKey == "dry_skin" && it.toKey == "pale_skin" })
+    }
+
+    @Test fun `literal synonym fires only when target key exists`() {
+        val plan = SymptomCanonicalizer.plan(listOf(info("loss_of_appetite", 3)))
+        assertTrue(plan.isEmpty())
     }
 }
