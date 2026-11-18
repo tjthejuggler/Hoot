@@ -136,6 +136,33 @@ for no breaking changes to the existing v1 surface.
 
 ## Changelog
 
+### 2026-11-18 (15) — Per-item nutrient breakdown + manual edits
+
+- **Motivating case:** a day showed "3120 mcg iodine" (~3× the 1100 mcg UL)
+  with no way to see WHICH food/supplement claimed it, let alone fix it.
+- "Logged today" rows (Home) and day-sheet rows are now tappable: the new
+  `ItemNutrientSheet` shows the nutrients that item actually contributes on
+  the selected day, each PRE-FILLED in an editable numeric field (edit in
+  place). A "+ Add a nutrient" chip opens a search-filterable picker over
+  every other nutrient; picking one appends an editable row. Saved edits
+  become persistent overrides.
+- New `nutrient_overrides` table (DB v10, additive migration): one row per
+  (source item, nutrient) manual edit. The `IntakeAggregator` applies them
+  at the END of every day recompute — computed rows for that pair are
+  replaced, so edits survive re-resolution and Tail re-sync. Amount `0`
+  suppresses the nutrient for the item; an override may also add a nutrient
+  the resolver never produced. Guards: overrides for sources with no rows on
+  the day (deleted items) are skipped; water rows are never touched.
+- Save semantics: fields are pre-filled with the current credited amount, so
+  only CHANGED values are written as overrides (untouched fields stay
+  computed). ✍️ marks manually-set nutrients, with a per-row "Reset to
+  computed".
+- Attribution queries: `mealNutrientTotals`/`supplementNutrientTotals`
+  (SUM per nutrient per source on a day) in `IntakeDao`/`IntakeRepository`
+  and on the deprecated `NutrientRepository` facade.
+- Tests: `IntakeAggregatorOverrideTest` pins replacement, suppression,
+  scoping, add-new-nutrient, ghost-source guard and water immunity.
+
 ### 2026-11-18 (14) — Supplemental-UL clarity + manual ✍️ markers
 
 - **Magnesium UL contradiction fixed (root cause, not cosmetic):** the NIH

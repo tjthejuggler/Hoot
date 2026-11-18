@@ -112,6 +112,9 @@ fun HomeScreen(
     var showDatePicker by remember { mutableStateOf(false) }
     var showConsumedDetail by remember { mutableStateOf(false) }
     var showAllPicks by remember { mutableStateOf(false) }
+    // Per-item nutrient breakdown (feedback 2026-11-18): tapping a logged
+    // meal/supplement opens its attributed-nutrients sheet (editable).
+    val itemNutrientState by vm.itemNutrients.collectAsStateWithLifecycle()
     var symptomDetail by remember {
         mutableStateOf<com.example.hoot.domain.insights.SymptomMatcher.RankedSymptom?>(null)
     }
@@ -151,6 +154,14 @@ fun HomeScreen(
             supplements = supplements,
             tailEntries = tailEntries,
             waterUnitMode = waterUnitMode,
+            onOpenMealNutrients = { meal ->
+                showConsumedDetail = false
+                vm.openMealNutrients(meal)
+            },
+            onOpenSupplementNutrients = { supp ->
+                showConsumedDetail = false
+                vm.openSupplementNutrients(supp)
+            },
             onDismiss = { showConsumedDetail = false }
         )
     }
@@ -161,6 +172,16 @@ fun HomeScreen(
             nutrients = symptom.contributors,
             onOpenNutrient = onOpenNutrient,
             onDismiss = { symptomDetail = null }
+        )
+    }
+    if (itemNutrientState.ref != null) {
+        ItemNutrientSheet(
+            state = itemNutrientState,
+            onEditDraft = vm::editItemNutrientDraft,
+            onAddNutrient = vm::addItemNutrientRow,
+            onSave = vm::saveItemNutrients,
+            onReset = vm::resetItemNutrient,
+            onDismiss = vm::closeItemNutrients
         )
     }
     if (showAllPicks) {
@@ -480,6 +501,7 @@ fun HomeScreen(
                         Row(
                             Modifier
                                 .fillMaxWidth()
+                                .clickable { vm.openMealNutrients(meal) }
                                 .padding(vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -501,6 +523,7 @@ fun HomeScreen(
                         Row(
                             Modifier
                                 .fillMaxWidth()
+                                .clickable { vm.openSupplementNutrients(supp) }
                                 .padding(vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {

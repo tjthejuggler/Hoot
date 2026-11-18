@@ -7,6 +7,7 @@ import androidx.room.Upsert
 import com.example.hoot.data.local.entity.DietaryProfileEntity
 import com.example.hoot.data.local.entity.NutrientGoalEntity
 import com.example.hoot.data.local.entity.NutrientIntakeEntity
+import com.example.hoot.data.local.entity.NutrientOverrideEntity
 import com.example.hoot.data.local.entity.RecommendationEntity
 import com.example.hoot.data.local.entity.ScoreSnapshotEntity
 import com.example.hoot.data.local.entity.TailAppConfigEntity
@@ -95,6 +96,48 @@ interface IntakeDao {
 
     @Query("DELETE FROM nutrient_intake_log")
     suspend fun clearAll()
+
+    /**
+     * Per-meal nutrient attribution for ONE day (item breakdown sheet,
+     * feedback 2026-11-18): SUM per nutrient across the meal's ledger rows
+     * (an ingredient-per-row ledger means one meal can have many rows for the
+     * same nutrient).
+     */
+    @SuppressWarnings(RoomWarnings.QUERY_MISMATCH) // day is null by design (single-source sums)
+    @Query(
+        "SELECT nutrientId, SUM(amount) AS total FROM nutrient_intake_log " +
+            "WHERE day = :day AND sourceMealId = :mealId GROUP BY nutrientId"
+    )
+    suspend fun mealNutrientTotals(day: String, mealId: String): List<NutrientDayTotal>
+
+    /** Per-supplement nutrient attribution for ONE day (item breakdown sheet). */
+    @SuppressWarnings(RoomWarnings.QUERY_MISMATCH) // day is null by design (single-source sums)
+    @Query(
+        "SELECT nutrientId, SUM(amount) AS total FROM nutrient_intake_log " +
+            "WHERE day = :day AND sourceSupplementId = :supplementId GROUP BY nutrientId"
+    )
+    suspend fun supplementNutrientTotals(day: String, supplementId: String): List<NutrientDayTotal>
+}
+
+/** DAO for [NutrientOverrideEntity] — manual per-item nutrient edits (2026-11-18). */
+@Dao
+interface NutrientOverrideDao {
+    /** Live manual edits for one meal/supplement (item sheet ✍️ markers). */
+    @Query("SELECT * FROM nutrient_overrides WHERE sourceId = :sourceId")
+    fun observeForSource(sourceId: String): Flow<List<NutrientOverrideEntity>>
+
+    /** All overrides affecting one day — read per [com.example.hoot.domain.nutrition.IntakeAggregator] recompute. */
+    @Query("SELECT * FROM nutrient_overrides WHERE day = :day")
+    suspend fun forDay(day: String): List<NutrientOverrideEntity>
+
+    @Upsert
+    suspend fun upsert(override: NutrientOverrideEntity)
+
+    @Query("DELETE FROM nutrient_overrides WHERE id = :id")
+    suspend fun delete(id: String)
+
+    @Query("DELETE FROM nutrient_overrides WHERE sourceId = :sourceId")
+    suspend fun deleteForSource(sourceId: String)
 }
 
 /** Projection row: summed intake of one nutrient over a day/range.

@@ -41,6 +41,41 @@ data class NutrientIntakeEntity(
 )
 
 /**
+ * MANUAL per-item nutrient override (feedback 2026-11-18): the user edited a
+ * nutrient amount attributed to one meal/supplement on one day (e.g. a bogus
+ * "3120 mcg iodine" estimate). One row REPLACES every computed ledger row for
+ * that (source, nutrient) on every [com.example.hoot.domain.nutrition.IntakeAggregator]
+ * recompute — the edit survives re-resolution and re-sync because it lives
+ * outside the wiped-and-rebuilt ledger. `amount = 0` means "suppress this
+ * nutrient for this item entirely" (no ledger row is emitted).
+ */
+@Entity(
+    tableName = "nutrient_overrides",
+    indices = [
+        Index(value = ["sourceType", "sourceId", "nutrientId"], unique = true),
+        Index("sourceId")
+    ]
+)
+data class NutrientOverrideEntity(
+    @PrimaryKey val id: String,          // "<sourceType>:<sourceId>:<nutrientId>"
+    val sourceType: String,              // "meal" | "supplement"
+    val sourceId: String,                // mealId / supplementId
+    val nutrientId: String,              // FK → nutrient_definitions
+    val day: String,                     // day the source belongs to (recompute scoping)
+    val amount: Double,                  // canonical unit; 0 = suppress
+    val updatedAt: Long                  // epoch millis of the edit
+) {
+    companion object {
+        const val TYPE_MEAL = "meal"
+        const val TYPE_SUPPLEMENT = "supplement"
+
+        /** Deterministic primary key for one (source, nutrient) manual edit. */
+        fun buildId(sourceType: String, sourceId: String, nutrientId: String): String =
+            "$sourceType:$sourceId:$nutrientId"
+    }
+}
+
+/**
  * One nutrient ↔ symptom association (deficiency system, 2026-11-16).
  * Rows come from the curated seed (NIH-derived, [Source.SEED]) or from the
  * per-nutrient research agent ([Source.RESEARCH]); `confidence` modulates

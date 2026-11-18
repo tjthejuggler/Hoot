@@ -6,6 +6,7 @@ import com.example.hoot.data.local.dao.LookupCacheDao
 import com.example.hoot.data.local.dao.NutrientDao
 import com.example.hoot.data.local.dao.NutrientDayTotal
 import com.example.hoot.data.local.dao.NutrientGoalDao
+import com.example.hoot.data.local.dao.NutrientOverrideDao
 import com.example.hoot.data.local.dao.ProfileDao
 import com.example.hoot.data.local.dao.RecommendationDao
 import com.example.hoot.data.local.dao.ScoreSnapshotDao
@@ -17,6 +18,7 @@ import com.example.hoot.data.local.entity.LookupCacheEntity
 import com.example.hoot.data.local.entity.NutrientDefinitionEntity
 import com.example.hoot.data.local.entity.NutrientGoalEntity
 import com.example.hoot.data.local.entity.NutrientIntakeEntity
+import com.example.hoot.data.local.entity.NutrientOverrideEntity
 import com.example.hoot.data.local.entity.RecommendationEntity
 import com.example.hoot.domain.insights.DietProfile
 import com.example.hoot.data.local.entity.ScoreSnapshotEntity
@@ -47,10 +49,11 @@ class NutrientRepository(
     sourceDao: SourceDao,
     supplementDao: SupplementDao,
     recommendationDao: RecommendationDao,
-    scoreSnapshotDao: ScoreSnapshotDao
+    scoreSnapshotDao: ScoreSnapshotDao,
+    overrideDao: NutrientOverrideDao
 ) {
     val definitions = NutrientDefinitionRepository(nutrientDao, goalDao)
-    val intake = IntakeRepository(intakeDao)
+    val intake = IntakeRepository(intakeDao, overrideDao)
     val foods = FoodRepository(foodDao, profileDao)
     val lookupCache = LookupCacheRepository(lookupCacheDao, sourceDao)
     val supplements = SupplementRepository(supplementDao)
@@ -115,6 +118,24 @@ class NutrientRepository(
 
     fun observeDailyTotals(day: String): Flow<List<NutrientDayTotal>> =
         intake.observeDailyTotals(day)
+
+    // ---- Manual per-item overrides (feedback 2026-11-18) ------------------
+    // (delegated so legacy call sites keep compiling; new code: intakeRepo)
+
+    fun observeOverridesForSource(sourceId: String) = intake.observeOverridesForSource(sourceId)
+
+    suspend fun overridesForDay(day: String): List<NutrientOverrideEntity> =
+        intake.overridesForDay(day)
+
+    suspend fun saveOverride(override: NutrientOverrideEntity) = intake.saveOverride(override)
+
+    suspend fun deleteOverride(id: String) = intake.deleteOverride(id)
+
+    suspend fun mealNutrientTotals(day: String, mealId: String) =
+        intake.mealNutrientTotals(day, mealId)
+
+    suspend fun supplementNutrientTotals(day: String, supplementId: String) =
+        intake.supplementNutrientTotals(day, supplementId)
 
     fun observeDailyTotalsRange(from: String, to: String): Flow<List<NutrientDayTotal>> =
         intake.observeDailyTotalsRange(from, to)

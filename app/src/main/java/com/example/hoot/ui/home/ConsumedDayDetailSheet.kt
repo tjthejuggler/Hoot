@@ -1,5 +1,6 @@
 package com.example.hoot.ui.home
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -46,6 +47,8 @@ fun ConsumedDayDetailSheet(
     supplements: List<SupplementEntity>,
     tailEntries: List<TailEntryEntity>,
     waterUnitMode: String = "auto",
+    onOpenMealNutrients: (MealEntity) -> Unit = {},
+    onOpenSupplementNutrients: (SupplementEntity) -> Unit = {},
     onDismiss: () -> Unit
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -95,7 +98,12 @@ fun ConsumedDayDetailSheet(
                 item { DetailSectionLabel("Meals") }
                 items(meals.size) { i ->
                     val meal = meals[i]
-                    Column(Modifier.padding(vertical = 4.dp)) {
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { onOpenMealNutrients(meal) }
+                            .padding(vertical = 4.dp)
+                    ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
                                 "🍽️",
@@ -144,7 +152,10 @@ fun ConsumedDayDetailSheet(
                 items(supplements.size) { i ->
                     val supp = supplements[i]
                     Row(
-                        Modifier.padding(vertical = 4.dp),
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { onOpenSupplementNutrients(supp) }
+                            .padding(vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text("💊", modifier = Modifier.width(24.dp))

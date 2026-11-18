@@ -186,9 +186,19 @@ class IntakeAggregator(
                 )
             }
 
-            if (rows.isNotEmpty()) nutrients.logIntake(rows)
-            written += rows.size
-            Log.d(TAG, "recompute($day): ${rows.size} ledger rows (water=$waterLiters L)")
+            // ── Manual overrides (feedback 2026-11-18): the user's per-item  ──
+            // edits REPLACE the computed rows for that (item, nutrient). Applied
+            // LAST so they survive every wipe-and-rebuild above; amount 0 fully
+            // suppresses the nutrient for the item. See [applyOverrides].
+            val finalRows = applyOverrides(
+                rows,
+                nutrients.overridesForDay(day),
+                day
+            )
+
+            if (finalRows.isNotEmpty()) nutrients.logIntake(finalRows)
+            written += finalRows.size
+            Log.d(TAG, "recompute($day): ${finalRows.size} ledger rows (water=$waterLiters L)")
         }
         written
     }
@@ -209,6 +219,70 @@ class IntakeAggregator(
          */
         val SUPPLEMENT_MACRO_SKIP: Set<String> =
             setOf("calories", "protein", "carbohydrates", "total_fat")
+
+        /**
+         * Manual-override application (feedback 2026-11-18), pure + JVM-testable:
+         * each [NutrientOverrideEntity] for the day REPLACES every computed row
+         * of its (source item, nutrient) pair — computed rows are dropped, and
+         * an override with amount > 0 emits exactly one authoritative row
+         * (deterministic `override:` id keeps re-runs idempotent). Amount 0
+         * fully suppresses the nutrient for that item. An override may also
+         * ADD a nutrient the resolver never produced for the item — the
+         * user's assertion wins. Guards: overrides only apply to sources that
+         * still HAVE computed rows on the day (a deleted meal/supplement must
+         * not keep crediting ghost rows), and water rows (no source ids) are
+         * never touched.
+         */
+        fun applyOverrides(
+            computed: List<NutrientIntakeEntity>,
+            overrides: List<com.example.hoot.data.local.entity.NutrientOverrideEntity>,
+            day: String
+        ): List<NutrientIntakeEntity> {
+            if (overrides.isEmpty()) return computed
+            data class Key(val sourceType: String, val sourceId: String, val nutrientId: String)
+
+            fun keyOf(row: NutrientIntakeEntity): Key? = when {
+                row.sourceMealId != null -> Key("meal", row.sourceMealId, row.nutrientId)
+                row.sourceSupplementId != null ->
+                    Key("supplement", row.sourceSupplementId, row.nutrientId)
+                else -> null // water/manual day rows — never overridable
+            }
+
+            // Sources present in the day's computed rows (meal/supplement ids).
+            // An override for an absent source is skipped: the item was
+            // deleted, so its edit must not resurrect ghost contributions.
+            val presentSources = HashSet<String>(computed.size)
+            for (row in computed) {
+                when {
+                    row.sourceMealId != null -> presentSources += "meal:${row.sourceMealId}"
+                    row.sourceSupplementId != null ->
+                        presentSources += "supplement:${row.sourceSupplementId}"
+                }
+            }
+
+            val active = overrides.associateBy { Key(it.sourceType, it.sourceId, it.nutrientId) }
+            val out = ArrayList<NutrientIntakeEntity>(computed.size)
+            for (row in computed) {
+                val key = keyOf(row)
+                if (key == null || key !in active) {
+                    out += row // untouched (water) or not overridden
+                }
+                // else: replaced below (or suppressed)
+            }
+            for ((key, ov) in active) {
+                if (ov.amount <= 0.0) continue // suppression — nothing to add
+                if ("${ov.sourceType}:${ov.sourceId}" !in presentSources) continue
+                out += NutrientIntakeEntity(
+                    id = "override:${ov.id}",
+                    nutrientId = key.nutrientId,
+                    day = day,
+                    amount = ov.amount,
+                    sourceMealId = if (ov.sourceType == "meal") ov.sourceId else null,
+                    sourceSupplementId = if (ov.sourceType == "supplement") ov.sourceId else null
+                )
+            }
+            return out
+        }
 
         /**
          * Nutrient ids the meal row asserts as structured facts (Tail v2 rows

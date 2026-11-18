@@ -18,6 +18,7 @@ import com.example.hoot.data.local.dao.NutrientDao
 import com.example.hoot.data.local.dao.NutrientGoalDao
 import com.example.hoot.data.local.dao.ProfileDao
 import com.example.hoot.data.local.dao.RecommendationDao
+import com.example.hoot.data.local.dao.NutrientOverrideDao
 import com.example.hoot.data.local.dao.ScoreSnapshotDao
 import com.example.hoot.data.local.dao.SourceDao
 import com.example.hoot.data.local.dao.SupplementDao
@@ -34,6 +35,7 @@ import com.example.hoot.data.local.entity.NutrientDefinitionEntity
 import com.example.hoot.data.local.entity.NutrientGoalEntity
 import com.example.hoot.data.local.entity.NutrientSymptomEntity
 import com.example.hoot.data.local.entity.NutrientIntakeEntity
+import com.example.hoot.data.local.entity.NutrientOverrideEntity
 import com.example.hoot.data.local.entity.RecommendationEntity
 import com.example.hoot.data.local.entity.ScoreSnapshotEntity
 import com.example.hoot.data.local.entity.SourceEntity
@@ -67,7 +69,8 @@ import kotlinx.coroutines.launch
         ScoreSnapshotEntity::class,
         TailEntryEntity::class,
         FoodKnowledgeEntity::class,
-        NutrientSymptomEntity::class
+        NutrientSymptomEntity::class,
+        NutrientOverrideEntity::class
     ],
     // v4: IngredientEntity/SupplementEntity gained `resolveAttempts` (bug fix:
     // permanently-failed items must not re-enqueue on every start). v3 → v4 is
@@ -84,7 +87,9 @@ import kotlinx.coroutines.launch
     // curated seed + research-agent associations; additive only.
     // v9: food_knowledge gained `manualLinksJson` (feedback 2026-11-18) —
     // which nutrient links the user added by hand (✍️ marker). Additive only.
-    version = 9,
+    // v10: new `nutrient_overrides` table (feedback 2026-11-18) — manual
+    // per-item nutrient edits applied on every ledger recompute. Additive.
+    version = 10,
     exportSchema = false
 )
 abstract class HootDatabase : RoomDatabase() {
@@ -105,6 +110,7 @@ abstract class HootDatabase : RoomDatabase() {
     abstract fun tailEntryDao(): TailEntryDao
     abstract fun foodKnowledgeDao(): FoodKnowledgeDao
     abstract fun nutrientSymptomDao(): NutrientSymptomDao
+    abstract fun nutrientOverrideDao(): NutrientOverrideDao
 
     companion object {
         private const val DB_NAME = "hoot.db"
@@ -132,9 +138,11 @@ abstract class HootDatabase : RoomDatabase() {
                     // v6 → v7 adds the permanent food_knowledge table.
                     // v7 → v8 adds the nutrient_symptom table (deficiency system).
                     // v8 → v9 adds manualLinksJson to food_knowledge (✍️ marker).
+                    // v9 → v10 adds the nutrient_overrides table (manual edits).
                     .addMigrations(
                         MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6,
-                        MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9
+                        MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9,
+                        MIGRATION_9_10
                     )
                     // Debug-only schema: a missed migration rebuilds from the seed.
                     .fallbackToDestructiveMigration(dropAllTables = true)
@@ -189,6 +197,36 @@ abstract class HootDatabase : RoomDatabase() {
                 db.execSQL(
                     "ALTER TABLE food_knowledge ADD COLUMN manualLinksJson " +
                         "TEXT NOT NULL DEFAULT '[]'"
+                )
+            }
+        }
+
+        /**
+         * v9 → v10: `nutrient_overrides` table (feedback 2026-11-18) — manual
+         * per-item nutrient edits from the day-view item sheet. Additive only;
+         * no existing data is touched.
+         */
+        private val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `nutrient_overrides` (" +
+                        "`id` TEXT NOT NULL, " +
+                        "`sourceType` TEXT NOT NULL, " +
+                        "`sourceId` TEXT NOT NULL, " +
+                        "`nutrientId` TEXT NOT NULL, " +
+                        "`day` TEXT NOT NULL, " +
+                        "`amount` REAL NOT NULL, " +
+                        "`updatedAt` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`id`))"
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS " +
+                        "`index_nutrient_overrides_sourceType_sourceId_nutrientId` " +
+                        "ON `nutrient_overrides` (`sourceType`, `sourceId`, `nutrientId`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_nutrient_overrides_sourceId` " +
+                        "ON `nutrient_overrides` (`sourceId`)"
                 )
             }
         }

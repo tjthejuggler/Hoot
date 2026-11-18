@@ -75,7 +75,7 @@ class AppGraph(context: Context) {
         database.nutrientDao(),
         database.nutrientGoalDao()
     )
-    val intakeRepo = IntakeRepository(database.intakeDao())
+    val intakeRepo = IntakeRepository(database.intakeDao(), database.nutrientOverrideDao())
     val foods = FoodRepository(database.foodDao(), database.profileDao())
     val lookupCache = LookupCacheRepository(database.lookupCacheDao(), database.sourceDao())
 
@@ -104,7 +104,8 @@ class AppGraph(context: Context) {
         database.sourceDao(),
         database.supplementDao(),
         database.recommendationDao(),
-        database.scoreSnapshotDao()
+        database.scoreSnapshotDao(),
+        database.nutrientOverrideDao()
     )
 
     val lookups = LookupRepository(

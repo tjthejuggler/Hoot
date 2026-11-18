@@ -2,7 +2,9 @@ package com.example.hoot.data.repository
 
 import com.example.hoot.data.local.dao.IntakeDao
 import com.example.hoot.data.local.dao.NutrientDayTotal
+import com.example.hoot.data.local.dao.NutrientOverrideDao
 import com.example.hoot.data.local.entity.NutrientIntakeEntity
+import com.example.hoot.data.local.entity.NutrientOverrideEntity
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -11,7 +13,8 @@ import kotlinx.coroutines.flow.Flow
  * history charts. Split out of [NutrientRepository] (facade).
  */
 class IntakeRepository(
-    private val intakeDao: IntakeDao
+    private val intakeDao: IntakeDao,
+    private val overrideDao: NutrientOverrideDao
 ) {
     fun observeIntakeByDay(day: String): Flow<List<NutrientIntakeEntity>> =
         intakeDao.observeByDay(day)
@@ -58,7 +61,33 @@ class IntakeRepository(
     fun observeDailyTotals(day: String): Flow<List<NutrientDayTotal>> =
         intakeDao.observeDailyTotals(day)
 
+    // ---- Manual per-item overrides (feedback 2026-11-18) ------------------
+
+    /** Live manual edits for one meal/supplement (✍️ markers in the item sheet). */
+    fun observeOverridesForSource(sourceId: String): Flow<List<NutrientOverrideEntity>> =
+        overrideDao.observeForSource(sourceId)
+
+    /** All manual edits affecting one day — consumed by the aggregator recompute. */
+    suspend fun overridesForDay(day: String): List<NutrientOverrideEntity> =
+        overrideDao.forDay(day)
+
+    /** Saves one manual edit (upsert; amount 0 = suppress the nutrient for the item). */
+    suspend fun saveOverride(override: NutrientOverrideEntity) = overrideDao.upsert(override)
+
+    /** Removes one manual edit (back to computed values). */
+    suspend fun deleteOverride(id: String) = overrideDao.delete(id)
+
     /** Reactive per-(nutrient, day) totals across a range (history charts). */
     fun observeDailyTotalsRange(from: String, to: String): Flow<List<NutrientDayTotal>> =
         intakeDao.observeDailyTotalsRange(from, to)
+
+    // ---- Per-item attribution (item breakdown sheet, 2026-11-18) ----------
+
+    /** SUM of ledger rows per nutrient for one meal on one day. */
+    suspend fun mealNutrientTotals(day: String, mealId: String): List<NutrientDayTotal> =
+        intakeDao.mealNutrientTotals(day, mealId)
+
+    /** SUM of ledger rows per nutrient for one supplement on one day. */
+    suspend fun supplementNutrientTotals(day: String, supplementId: String): List<NutrientDayTotal> =
+        intakeDao.supplementNutrientTotals(day, supplementId)
 }

@@ -5,6 +5,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.hoot.appGraph
 import com.example.hoot.data.local.entity.MealEntity
+import com.example.hoot.data.local.entity.NutrientDefinitionEntity
+import com.example.hoot.data.local.entity.NutrientOverrideEntity
 import com.example.hoot.data.local.entity.ScoreSnapshotEntity
 import com.example.hoot.data.local.entity.SupplementEntity
 import com.example.hoot.data.local.entity.TailEntryEntity
@@ -595,4 +597,215 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Retry affordance: resets failure counters and re-resolves + re-aggregates. */
     fun retryUnresolved() = graph.nutritionProcessor.retryAll()
+
+    // ---- Per-item nutrient breakdown (feedback 2026-11-18) ----------------
+    //
+    // "Logged today" rows are tappable → sheet listing every nutrient
+    // attributed to that meal/supplement on the selected day, each editable.
+    // Edits are stored as overrides (survive ledger recomputes) and applied
+    // by re-running the day's aggregation.
+    //
+    // UX refinement (feedback 2026-11-18 #2): only nutrients the item
+    // actually contributes are listed; anything else is added on demand via
+    // a searchable "+" picker. Field boxes are PRE-FILLED with the current
+    // credited amount so a value is edited in place — untouched fields are
+    // not saved as overrides (only changed ones are).
+
+    /** Identifies the item whose nutrient breakdown is open. */
+    data class ItemRef(val sourceType: String, val sourceId: String) {
+        val isMeal: Boolean get() = sourceType == NutrientOverrideEntity.TYPE_MEAL
+    }
+
+    /** One editable nutrient row in the item sheet. */
+    data class ItemNutrientRow(
+        val nutrientId: String,
+        val name: String,
+        val unit: String,
+        val computed: Double,
+        /** Live manual override amount, or null when the value is computed. */
+        val overrideAmount: Double?
+    ) {
+        /** What the ledger currently credits (override wins). */
+        val effective: Double get() = overrideAmount ?: computed
+        val isOverridden: Boolean get() = overrideAmount != null
+    }
+
+    /** Picker option for the "+" add-nutrient dialog. */
+    data class NutrientOption(val id: String, val name: String, val unit: String)
+
+    /** State of the per-item nutrient sheet. */
+    data class ItemNutrientState(
+        val ref: ItemRef? = null,
+        val title: String = "",
+        val rows: List<ItemNutrientRow> = emptyList(),
+        /** Every addable nutrient (all defs minus water), for the picker. */
+        val options: List<NutrientOption> = emptyList(),
+        val loading: Boolean = false,
+        /** Transient copy of unsaved edits: nutrientId → field text. */
+        val drafts: Map<String, String> = emptyMap(),
+        val saving: Boolean = false
+    )
+
+    private val _itemNutrients = MutableStateFlow(ItemNutrientState())
+    val itemNutrients: StateFlow<ItemNutrientState> = _itemNutrients.asStateFlow()
+
+    /** Opens the breakdown sheet for one meal on the selected day. */
+    fun openMealNutrients(meal: MealEntity) {
+        openItemNutrients(
+            ItemRef(NutrientOverrideEntity.TYPE_MEAL, meal.id),
+            meal.title ?: meal.rawText
+        )
+    }
+
+    /** Opens the breakdown sheet for one supplement on the selected day. */
+    fun openSupplementNutrients(supplement: SupplementEntity) {
+        openItemNutrients(
+            ItemRef(NutrientOverrideEntity.TYPE_SUPPLEMENT, supplement.id),
+            supplement.label
+        )
+    }
+
+    private fun openItemNutrients(ref: ItemRef, title: String) {
+        _itemNutrients.value = ItemNutrientState(ref = ref, title = title, loading = true)
+        viewModelScope.launch {
+            val day = _day.value
+            val totalsRaw = if (ref.isMeal) {
+                graph.nutrients.mealNutrientTotals(day, ref.sourceId)
+            } else {
+                graph.nutrients.supplementNutrientTotals(day, ref.sourceId)
+            }
+            val totals = totalsRaw.associate { it.nutrientId to it.total }
+
+            val defs: Map<String, NutrientDefinitionEntity> =
+                graph.nutrients.definitionsAll().associateBy { it.id }
+            val overrides = graph.nutrients.observeOverridesForSource(ref.sourceId)
+                .first().associateBy { it.nutrientId }
+
+            // Only nutrients the item actually contributes (ledger row OR an
+            // existing manual edit — a 0-override still shows so Reset works).
+            // Everything else is reachable through the "+" picker.
+            val rows = defs.values
+                .filter { it.id != "water" }
+                .filter { totals.containsKey(it.id) || overrides.containsKey(it.id) }
+                .sortedBy { it.name.lowercase() }
+                .map { def ->
+                    ItemNutrientRow(
+                        nutrientId = def.id,
+                        name = def.name,
+                        unit = def.unit,
+                        computed = totals[def.id] ?: 0.0,
+                        overrideAmount = overrides[def.id]?.amount
+                    )
+                }
+            val options = defs.values
+                .filter { it.id != "water" }
+                .sortedBy { it.name.lowercase() }
+                .map { NutrientOption(it.id, it.name, it.unit) }
+            _itemNutrients.value = _itemNutrients.value.copy(
+                rows = rows, options = options, loading = false, drafts = emptyMap()
+            )
+        }
+    }
+
+    /** "+" picker selection: appends the nutrient as a new editable row. */
+    fun addItemNutrientRow(nutrientId: String) {
+        val state = _itemNutrients.value
+        if (state.rows.any { it.nutrientId == nutrientId }) return
+        val opt = state.options.firstOrNull { it.id == nutrientId } ?: return
+        // An existing override for a never-computed nutrient (suppressed to 0
+        // or added then removed) still applies — surface it instead of 0.
+        viewModelScope.launch {
+            val existing = graph.nutrients.observeOverridesForSource(
+                state.ref?.sourceId ?: return@launch
+            ).first().firstOrNull { it.nutrientId == nutrientId }
+            _itemNutrients.value = _itemNutrients.value.copy(
+                rows = _itemNutrients.value.rows +
+                    ItemNutrientRow(
+                        nutrientId = opt.id,
+                        name = opt.name,
+                        unit = opt.unit,
+                        computed = 0.0,
+                        overrideAmount = existing?.amount
+                    )
+            )
+        }
+    }
+
+    /** User typed into one nutrient field (unsaved draft). */
+    fun editItemNutrientDraft(nutrientId: String, text: String) {
+        _itemNutrients.value = _itemNutrients.value.copy(
+            drafts = _itemNutrients.value.drafts + (nutrientId to text)
+        )
+    }
+
+    /**
+     * Persists CHANGED fields as overrides (amount 0 = suppress) and
+     * re-aggregates the day so totals/score update immediately. Fields are
+     * pre-filled with the current credited amount, so only values that
+     * actually differ from it are written; blank/invalid fields are skipped.
+     */
+    fun saveItemNutrients() {
+        val state = _itemNutrients.value
+        val ref = state.ref ?: return
+        // Diff against each row's current credited value (override ?? computed).
+        val byId = state.rows.associateBy { it.nutrientId }
+        val changed = state.drafts.mapNotNull { (nutrientId, text) ->
+            if (text.isBlank()) return@mapNotNull null
+            val amount = text.trim().replace(',', '.').toDoubleOrNull() ?: return@mapNotNull null
+            if (amount < 0) return@mapNotNull null
+            val current = byId[nutrientId]?.effective
+            if (current != null && amount == current) return@mapNotNull null // untouched
+            nutrientId to amount
+        }.toMap()
+        val drafts = changed
+        if (drafts.isEmpty()) {
+            _itemNutrients.value = state.copy(drafts = emptyMap())
+            return
+        }
+        _itemNutrients.value = state.copy(saving = true)
+        viewModelScope.launch {
+            try {
+                val day = _day.value
+                val now = System.currentTimeMillis()
+                for ((nutrientId, amount) in drafts) {
+                    graph.nutrients.saveOverride(
+                        NutrientOverrideEntity(
+                            id = NutrientOverrideEntity.buildId(ref.sourceType, ref.sourceId, nutrientId),
+                            sourceType = ref.sourceType,
+                            sourceId = ref.sourceId,
+                            nutrientId = nutrientId,
+                            day = day,
+                            amount = amount,
+                            updatedAt = now
+                        )
+                    )
+                }
+                // Re-aggregate: overrides are applied at the end of recompute.
+                runCatching { graph.intakeAggregator.recomputeDays(listOf(day)) }
+                _itemNutrients.value = _itemNutrients.value.copy(saving = false, drafts = emptyMap())
+                // Re-open from the fresh ledger so rows reflect the edit.
+                openItemNutrients(ref, state.title)
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                android.util.Log.e("HootItemNutrients", "save failed", e)
+                _itemNutrients.value = _itemNutrients.value.copy(saving = false)
+            }
+        }
+    }
+
+    /** Reverts one nutrient to the computed value (drops the override). */
+    fun resetItemNutrient(nutrientId: String) {
+        val ref = _itemNutrients.value.ref ?: return
+        viewModelScope.launch {
+            val id = NutrientOverrideEntity.buildId(ref.sourceType, ref.sourceId, nutrientId)
+            graph.nutrients.deleteOverride(id)
+            runCatching { graph.intakeAggregator.recomputeDays(listOf(_day.value)) }
+            openItemNutrients(ref, _itemNutrients.value.title)
+        }
+    }
+
+    /** Closes the sheet (drafts are discarded). */
+    fun closeItemNutrients() {
+        _itemNutrients.value = ItemNutrientState()
+    }
 }

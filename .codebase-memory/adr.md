@@ -1,39 +1,16 @@
-# ADR: Supplemental-only Upper Limits and manual ✍️ provenance markers
-
-Date: 2026-11-18
-Status: accepted (rev 2 — user feedback round 2)
+# ADR: Manual per-item nutrient overrides (2026-11-18)
 
 ## Context
-1. Magnesium's seed data (RDA 400 mg, UL 350 mg) is NIH-correct, but the
-   350 mg UL applies ONLY to supplemental magnesium — food has no UL. The
-   score pipeline (ScoreSnapshotter) already suppressed it, but every other
-   surface (Targets card, History rows, HomeViewModel EXCESS flag,
-   InsightsEngine over-cap counting) rendered/applied the raw number,
-   reading as a contradiction next to the higher RDA.
-2. The nutrient page had redundant reference cards ("Signs you're too low",
-   "If you consistently overshoot") duplicating the Symptoms section's data
-   without its confidence bars/editing, an always-visible "Add symptom" box
-   hard-wired to the DEFICIENCY kind, and no curated-vs-manual distinction.
+User saw "3120 mcg iodine" on 2026-09-13 (~3× the 1100 mcg UL) with no way to see which food/supplement claimed it or to correct it. The intake ledger (nutrient_intake_log) already carries attribution (sourceMealId/sourceSupplementId) but no UI exposed it per item, and the ledger is wiped-and-rebuilt on every IntakeAggregator recompute — so in-place edits would not survive.
 
 ## Decision
-- Single source of truth: `NutrientKeys.SUPPLEMENTAL_ONLY_UL` (setOf
-  "magnesium"). Consumers: ScoreSnapshotter, HomeViewModel (EXCESS flag),
-  InsightsEngine (over-cap day counting), TargetsCard (explicit
-  "Supplement upper limit … pills and powders only … Food has no upper
-  limit, which is why it can sit below the recommended daily amount"),
-  HistoryScreen ("(supplements only)" suffix).
-- BOTH reference cards removed from the nutrient page; EffectsCard deleted.
-  The Symptoms section (confidence bars, ✕ remove, + add per subsection
-  with correct DEFICIENCY/EXCESS kind) is the single home for this content.
-- Manual adds live under each Symptoms subsection header via a + toggle
-  (SubsectionAddHeader) expanding an inline AddAssociationRow.
-- ✍️ prefix marks user-added links. Symptoms: source=="MANUAL". Foods: new
-  per-nutrient `food_knowledge.manualLinksJson` (DB v9, additive migration,
-  DEFAULT '[]'); written by addNutrientAssociation, cleared by
-  removeNutrientAssociation, round-tripped by KnowledgePackCodec.
+1. New `nutrient_overrides` Room table (DB v10, additive migration): one row per (sourceType=meal|supplement, sourceId, nutrientId), amount in canonical unit, 0 = suppress. PK = "<type>:<id>:<nutrient>"; unique index on (sourceType, sourceId, nutrientId).
+2. IntakeAggregator.applyOverrides(computed, overrides, day) — pure fn applied at the END of each day's recompute: drops computed rows of the overridden (item, nutrient) pair, emits one authoritative row (id "override:<overrideId>") when amount > 0. Guards: overrides only apply when the source still has rows on the day (no ghost credits from deleted meals); water rows never touched. Pinned by IntakeAggregatorOverrideTest.
+3. UI: ItemNutrientSheet (ModalBottomSheet) opened by tapping a meal/supplement row in Home "Logged today" or in ConsumedDayDetailSheet. Lists ALL nutrient definitions (attributed ones show credited amount; others "not attributed"), each with an editable numeric field. Save → upsert overrides → re-run recomputeDays(day) → totals/score refresh reactively. ✍️ marker + per-row Reset (deletes override, re-aggregates).
+4. Attribution read path: IntakeDao.mealNutrientTotals/supplementNutrientTotals (SUM per nutrient per source per day), surfaced via IntakeRepository and the deprecated NutrientRepository facade.
 
 ## Consequences
-- Every surface now agrees with the score pipeline on supplemental-only ULs;
-  no unqualified 350 mg magnesium warnings remain anywhere.
-- New installs and migrated v8 installs behave identically (additive column).
-- Removing a manual link removes its ✍️ marker; re-adding restores it.
+- Edits survive re-resolution, Tail re-sync, and full ledger recomputes (applied last, every time).
+- Overriding macros on Tail-authored rows intentionally diverges from Tail's numbers — user assertion wins for that nutrient.
+- Overrides for deleted sources persist as rows but are inert (skipped by the present-source guard); deleteForSource exists for future cleanup wiring.
+- Existing HomeViewModel.openItemNutrients reloads from the fresh ledger after save, so the sheet always shows post-edit truth.
