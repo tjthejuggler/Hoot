@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.hoot.appGraph
 import com.example.hoot.data.local.SymptomSeed
 import com.example.hoot.data.local.entity.NutrientDefinitionEntity
+import com.example.hoot.data.local.entity.NutrientSymptomEntity
 import com.example.hoot.data.local.entity.RecommendationEntity
 import com.example.hoot.domain.insights.DietAwareSources
 import com.example.hoot.domain.insights.DietTextFilter
@@ -72,7 +73,9 @@ data class FoodAssocRow(
     val normalizedName: String,
     val displayName: String,
     /** per-100 g value of THIS nutrient (null when only high-in is tagged). */
-    val per100: Double?
+    val per100: Double?,
+    /** true when the USER linked this food to the nutrient (✍️ marker). */
+    val manual: Boolean
 )
 
 /** State of the full-page nutrient detail (replaces the Insights bottom sheet). */
@@ -140,7 +143,9 @@ data class SymptomRow(
     val display: String,
     val confidence: Double,
     /** true when the research agent added this row. */
-    val researched: Boolean
+    val researched: Boolean,
+    /** true when the user added this link by hand (✍️ marker, 2026-11-18). */
+    val manual: Boolean
 )
 
 
@@ -332,7 +337,8 @@ class NutrientPageViewModel(app: Application) : AndroidViewModel(app) {
                 FoodAssocRow(
                     normalizedName = row.normalizedName,
                     displayName = row.displayName,
-                    per100 = FoodKnowledgeIndex.valuesFromJson(row.valuesJson)[s.nutrientId]
+                    per100 = FoodKnowledgeIndex.valuesFromJson(row.valuesJson)[s.nutrientId],
+                    manual = s.nutrientId in FoodKnowledgeIndex.fromJson(row.manualLinksJson)
                 )
             }
         _state.value = _state.value.copy(foodAssociations = rows)
@@ -342,13 +348,20 @@ class NutrientPageViewModel(app: Application) : AndroidViewModel(app) {
         val s = _state.value
         val rows = runCatching { graph.symptomAssociations.forNutrient(s.nutrientId) }
             .getOrDefault(emptyList())
+        fun toRow(it: NutrientSymptomEntity) = SymptomRow(
+            key = it.symptomKey,
+            display = it.displayName,
+            confidence = it.confidence,
+            researched = it.source == "RESEARCH",
+            manual = it.source == "MANUAL"
+        )
         _state.value = _state.value.copy(
             deficiencySymptoms = rows.filter { it.kind == SymptomSeed.KIND_DEFICIENCY }
                 .sortedByDescending { it.confidence }
-                .map { SymptomRow(it.symptomKey, it.displayName, it.confidence, it.source == "RESEARCH") },
+                .map(::toRow),
             excessSymptoms = rows.filter { it.kind == SymptomSeed.KIND_EXCESS }
                 .sortedByDescending { it.confidence }
-                .map { SymptomRow(it.symptomKey, it.displayName, it.confidence, it.source == "RESEARCH") }
+                .map(::toRow)
         )
     }
 

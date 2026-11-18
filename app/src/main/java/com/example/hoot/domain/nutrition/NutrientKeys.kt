@@ -100,6 +100,16 @@ object NutrientKeys {
      */
     val DERIVED_IDS: Set<String> = setOf("electrolyte_ratio")
 
+    /**
+     * Nutrients whose Upper Limit applies to the SUPPLEMENTAL form only
+     * (NIH ODS; NUTRIENTS.md §3) — food-source intake has no UL. Example:
+     * magnesium RDA 400 mg vs supplemental UL 350 mg, which read as a
+     * contradiction on the Targets card when presented without the
+     * qualifier (feedback 2026-11-18). Score and UI must not penalize or
+     * warn about FOOD intake crossing these.
+     */
+    val SUPPLEMENTAL_ONLY_UL: Set<String> = setOf("magnesium")
+
     /** Inverted lookup: normalized panel key → canonical nutrient id. */
     private val BY_KEY: Map<String, String> = buildMap {
         for ((id, keys) in ALIASES) for (k in keys) put(k, id)

@@ -45,6 +45,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.hoot.data.local.entity.NutrientDefinitionEntity
+import com.example.hoot.domain.nutrition.NutrientKeys
 import com.example.hoot.ui.charts.ChartTimeNavRow
 import com.example.hoot.ui.charts.LineChart
 import com.example.hoot.ui.charts.chartPan
@@ -312,6 +313,14 @@ private fun NutrientHeader(
             }
             Spacer(Modifier.height(8.dp))
             val target = goalTarget ?: def.rdaValue ?: 0.0
+            // Supplemental-only ULs (magnesium) get the qualifier so the cap
+            // can't read as contradicting a higher RDA (feedback 2026-11-18).
+            fun ulLabel(ul: Double): String =
+                if (def.id in NutrientKeys.SUPPLEMENTAL_ONLY_UL) {
+                    " · UL ${formatNutrient(ul, def.unit)} (supplements only)"
+                } else {
+                    " · UL ${formatNutrient(ul, def.unit)}"
+                }
             Text(
                 when {
                     isLimit ->
@@ -319,7 +328,7 @@ private fun NutrientHeader(
                             (def.ulValue?.let { " (UL ${formatNutrient(it, def.unit)})" } ?: "")
                     target > 0 ->
                         "Target ${formatNutrient(target, def.unit)}/day" +
-                            (def.ulValue?.let { " · UL ${formatNutrient(it, def.unit)}" } ?: "")
+                            (def.ulValue?.let { ulLabel(it) } ?: "")
                     else -> "No daily target"
                 },
                 style = MaterialTheme.typography.bodySmall

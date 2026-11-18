@@ -78,6 +78,7 @@ class FoodKnowledgeRepository(private val dao: FoodKnowledgeDao) {
                     resolutionMethod = resolutionMethod,
                     sourceUrlsJson = mergeUrls(null, sourceUrls),
                     researchedForJson = FoodKnowledgeIndex.toJson(researchedFor),
+                    manualLinksJson = FoodKnowledgeIndex.toJson(emptyList()),
                     firstResearchedAt = now,
                     lastResearchedAt = now,
                     researchCount = 1
@@ -118,7 +119,10 @@ class FoodKnowledgeRepository(private val dao: FoodKnowledgeDao) {
         dao.upsert(
             row.copy(
                 highInJson = FoodKnowledgeIndex.toJson(highIn),
-                valuesJson = FoodKnowledgeIndex.valuesToJson(values)
+                valuesJson = FoodKnowledgeIndex.valuesToJson(values),
+                manualLinksJson = FoodKnowledgeIndex.toJson(
+                    FoodKnowledgeIndex.fromJson(row.manualLinksJson) - nutrientId
+                )
             )
         )
     }
@@ -140,6 +144,13 @@ class FoodKnowledgeRepository(private val dao: FoodKnowledgeDao) {
         // a BLANK food/nutrient is rejected.
         if (normalizedName.isBlank() || nutrientId.isBlank()) return
         val existing = dao.byName(normalizedName)
+        // Manual link bookkeeping (feedback 2026-11-18): the id lands in
+        // manualLinksJson so the UI can mark this food ✍️ for the nutrient.
+        val manualLinks = { row: FoodKnowledgeEntity ->
+            FoodKnowledgeIndex.toJson(
+                (FoodKnowledgeIndex.fromJson(row.manualLinksJson) + nutrientId).distinct()
+            )
+        }
         if (existing != null) {
             val base = FoodKnowledgeIndex.valuesFromJson(existing.valuesJson)
             val values = if (per100g > 0.0) base + (nutrientId to per100g) else base
@@ -147,7 +158,8 @@ class FoodKnowledgeRepository(private val dao: FoodKnowledgeDao) {
             dao.upsert(
                 existing.copy(
                     valuesJson = FoodKnowledgeIndex.valuesToJson(values),
-                    highInJson = FoodKnowledgeIndex.toJson(highIn)
+                    highInJson = FoodKnowledgeIndex.toJson(highIn),
+                    manualLinksJson = manualLinks(existing)
                 )
             )
         } else {
@@ -165,6 +177,7 @@ class FoodKnowledgeRepository(private val dao: FoodKnowledgeDao) {
                     resolutionMethod = "manual",
                     sourceUrlsJson = "[]",
                     researchedForJson = "[]",
+                    manualLinksJson = FoodKnowledgeIndex.toJson(listOf(nutrientId)),
                     firstResearchedAt = now,
                     lastResearchedAt = now,
                     researchCount = 1

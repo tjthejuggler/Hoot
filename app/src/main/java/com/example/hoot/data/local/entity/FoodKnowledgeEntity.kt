@@ -37,6 +37,9 @@ data class FoodKnowledgeEntity(
     val resolutionMethod: String,           // "llm" | "web_usda" | "seed" | "manual"
     val sourceUrlsJson: String,             // provenance URLs (merged, capped)
     val researchedForJson: String,          // gap nutrient ids that triggered research
+    // (v9) nutrient ids the USER linked by hand (feedback 2026-11-18) —
+    // drives the ✍️ marker; disjoint from pipeline-discovered high-in links.
+    val manualLinksJson: String,            // ["iron", …] manually added ids
     val firstResearchedAt: Long,            // epoch millis of first knowledge
     val lastResearchedAt: Long,             // epoch millis of latest refresh
     val researchCount: Int                  // how many times re-encountered

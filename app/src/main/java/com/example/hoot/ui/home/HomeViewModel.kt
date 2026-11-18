@@ -19,6 +19,7 @@ import com.example.hoot.domain.insights.InsightsEngine
 import com.example.hoot.domain.insights.NutrientInsightDef
 import com.example.hoot.domain.insights.SmartFoodPick
 import com.example.hoot.domain.insights.WindowData
+import com.example.hoot.domain.nutrition.NutrientKeys
 import com.example.hoot.domain.score.ScoreComponent
 import com.example.hoot.domain.score.ScoreStatus
 import kotlinx.coroutines.flow.onStart
@@ -179,8 +180,13 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                         else (1.0 - (intake - target) / (target * 0.5)).coerceIn(0.0, 1.0)
                         else -> (intake / target).coerceIn(0.0, 1.0)
                     }
+                    // Supplemental-only ULs (magnesium): the NIH cap applies to
+                    // pills, not food — food intake crossing it is NOT an
+                    // excess (mirrors ScoreSnapshotter; feedback 2026-11-18).
                     val exceeded = isLimit && intake > target ||
-                        def.ulValue?.let { !isLimit && intake > it } == true
+                        def.ulValue?.let {
+                            !isLimit && def.id !in NutrientKeys.SUPPLEMENTAL_ONLY_UL && intake > it
+                        } == true
                     ScoreComponent(
                         nutrientId = def.id, name = def.name,
                         tier = goals[def.id]?.priority ?: def.tier,

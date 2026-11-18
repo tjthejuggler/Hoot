@@ -5,6 +5,7 @@ import com.example.hoot.data.local.entity.ScoreSnapshotEntity
 import com.example.hoot.data.repository.MealRepository
 import com.example.hoot.data.repository.NutrientRepository
 import com.example.hoot.data.repository.TailConfigRepository
+import com.example.hoot.domain.nutrition.NutrientKeys
 import java.time.LocalDate
 
 /**
@@ -123,7 +124,11 @@ class ScoreSnapshotter(
         /** NUTRIENTS.md §7.7 — aggregated but scored against a cap, not a target. */
         val LIMIT_TRACKERS = setOf("added_sugar", "saturated_fat", "trans_fat", "sodium")
 
-        /** ULs that apply to supplemental form only (NUTRIENTS.md §3). */
-        private val SUPPLEMENTAL_ONLY_UL = setOf("magnesium")
+        /**
+         * ULs that apply to supplemental form only — single source of truth
+         * moved to NutrientKeys (feedback 2026-11-18) so the UI surfaces the
+         * same qualifier the scorer already applies.
+         */
+        private val SUPPLEMENTAL_ONLY_UL = NutrientKeys.SUPPLEMENTAL_ONLY_UL
     }
 }

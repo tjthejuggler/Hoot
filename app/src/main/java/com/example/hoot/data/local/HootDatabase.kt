@@ -82,7 +82,9 @@ import kotlinx.coroutines.launch
     // Additive only; no existing data is touched.
     // v8: new `nutrient_symptom` table (deficiency system, 2026-11-16) —
     // curated seed + research-agent associations; additive only.
-    version = 8,
+    // v9: food_knowledge gained `manualLinksJson` (feedback 2026-11-18) —
+    // which nutrient links the user added by hand (✍️ marker). Additive only.
+    version = 9,
     exportSchema = false
 )
 abstract class HootDatabase : RoomDatabase() {
@@ -129,7 +131,11 @@ abstract class HootDatabase : RoomDatabase() {
                     // v5 → v6 adds the Tail-compatible capture columns on meals.
                     // v6 → v7 adds the permanent food_knowledge table.
                     // v7 → v8 adds the nutrient_symptom table (deficiency system).
-                    .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
+                    // v8 → v9 adds manualLinksJson to food_knowledge (✍️ marker).
+                    .addMigrations(
+                        MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6,
+                        MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9
+                    )
                     // Debug-only schema: a missed migration rebuilds from the seed.
                     .fallbackToDestructiveMigration(dropAllTables = true)
                     .build()
@@ -169,6 +175,21 @@ abstract class HootDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE meals ADD COLUMN healthNotes TEXT DEFAULT NULL")
                 db.execSQL("ALTER TABLE meals ADD COLUMN transcript TEXT DEFAULT NULL")
                 db.execSQL("ALTER TABLE meals ADD COLUMN photoPath TEXT DEFAULT NULL")
+            }
+        }
+
+        /**
+         * v8 → v9: `food_knowledge.manualLinksJson` (feedback 2026-11-18) —
+         * per-nutrient record of links the USER added by hand, driving the
+         * ✍️ manually-added marker on the nutrient page. One defaulted
+         * column; no existing data is touched.
+         */
+        private val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE food_knowledge ADD COLUMN manualLinksJson " +
+                        "TEXT NOT NULL DEFAULT '[]'"
+                )
             }
         }
 

@@ -2,6 +2,7 @@ package com.example.hoot.domain.insights
 
 import com.example.hoot.data.local.entity.NutrientGoalEntity
 import com.example.hoot.data.local.entity.ScoreSnapshotEntity
+import com.example.hoot.domain.nutrition.NutrientKeys
 import kotlin.math.abs
 
 /**
@@ -194,9 +195,10 @@ object InsightsEngine {
                 if (isLimit) it > 1.0 else it < DEFICIENT_DAY_RATIO
             }
             val overCapDays = if (isLimit) pcts.count { it > 1.0 }
-            else def.ul?.takeIf { it > 0 }?.let { ul ->
-                withData.count { v -> v > ul }
-            } ?: 0
+            // Supplemental-only ULs (magnesium): the cap applies to pills, not
+            // food — food days crossing it are NOT over-cap (feedback 2026-11-18).
+            else def.ul?.takeIf { it > 0 && def.id !in NutrientKeys.SUPPLEMENTAL_ONLY_UL }
+                ?.let { ul -> withData.count { v -> v > ul } } ?: 0
             aggs += Agg(
                 id = id, name = def.name, unit = def.unit, tier = def.tier,
                 target = target, isLimit = isLimit,

@@ -82,6 +82,7 @@ object KnowledgePackCodec {
         .put("resolutionMethod", f.resolutionMethod)
         .put("sourceUrlsJson", f.sourceUrlsJson)
         .put("researchedForJson", f.researchedForJson)
+        .put("manualLinksJson", f.manualLinksJson)
         .put("firstResearchedAt", f.firstResearchedAt)
         .put("lastResearchedAt", f.lastResearchedAt)
         .put("researchCount", f.researchCount)
@@ -141,6 +142,7 @@ object KnowledgePackCodec {
             resolutionMethod = o.optString("resolutionMethod").ifBlank { "import" },
             sourceUrlsJson = o.optString("sourceUrlsJson").ifBlank { "[]" },
             researchedForJson = o.optString("researchedForJson").ifBlank { "[]" },
+            manualLinksJson = o.optString("manualLinksJson").ifBlank { "[]" },
             firstResearchedAt = o.optNullableLong("firstResearchedAt") ?: now,
             lastResearchedAt = o.optNullableLong("lastResearchedAt") ?: now,
             researchCount = o.optInt("researchCount", 1)

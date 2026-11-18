@@ -45,6 +45,7 @@ class KnowledgePackCodecTest {
         resolutionMethod = "web_usda",
         sourceUrlsJson = """["https://fdc.nal.usda.gov"]""",
         researchedForJson = """["iron"]""",
+        manualLinksJson = """["iron"]""",
         firstResearchedAt = 100L,
         lastResearchedAt = 200L,
         researchCount = 3

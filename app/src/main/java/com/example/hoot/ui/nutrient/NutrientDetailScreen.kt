@@ -18,6 +18,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -62,6 +63,7 @@ import com.example.hoot.data.local.entity.RecommendationEntity
 import com.example.hoot.data.local.SymptomSeed
 import com.example.hoot.domain.insights.Grade
 import com.example.hoot.domain.insights.NutrientResearcher
+import com.example.hoot.domain.nutrition.NutrientKeys
 import com.example.hoot.ui.charts.ChartTimeNavRow
 import com.example.hoot.ui.charts.LineChart
 import com.example.hoot.ui.charts.chartPan
@@ -503,10 +505,26 @@ fun NutrientDetailScreen(
                         SectionHeader(
                             "Symptoms",
                             "What too little — and too much — of ${state.def.name} can look like. " +
-                                "Tap ✕ to remove a wrong link; add your own below."
+                                "Tap ✕ to remove a wrong link; ✍️ marks links you added yourself."
                         )
                         Spacer(Modifier.height(8.dp))
-                        Text("If you're too low", style = MaterialTheme.typography.titleSmall)
+                        // (feedback 2026-11-18) the always-visible "add symptom"
+                        // box is gone — each subsection header carries its own +
+                        // that reveals an inline input (and adds with the right
+                        // kind: DEFICIENCY vs EXCESS).
+                        var addingLow by remember { mutableStateOf(false) }
+                        SubsectionAddHeader(
+                            title = "If you're too low",
+                            expanded = addingLow,
+                            onToggle = { addingLow = !addingLow }
+                        )
+                        if (addingLow) {
+                            AddAssociationRow(
+                                hint = "Add symptom (e.g. Night cramps)",
+                                addLabel = "Add",
+                                onAdd = { label -> vm.addSymptom(label, SymptomSeed.KIND_DEFICIENCY) }
+                            )
+                        }
                         Spacer(Modifier.height(6.dp))
                         if (state.deficiencySymptoms.isEmpty()) {
                             Text(
@@ -520,21 +538,33 @@ fun NutrientDetailScreen(
                                 onRemove = { key -> vm.removeSymptom(key, "DEFICIENCY") }
                             )
                         }
-                        if (state.excessSymptoms.isNotEmpty()) {
-                            Spacer(Modifier.height(12.dp))
-                            Text("If you consistently overshoot", style = MaterialTheme.typography.titleSmall)
-                            Spacer(Modifier.height(6.dp))
+                        Spacer(Modifier.height(12.dp))
+                        var addingExcess by remember { mutableStateOf(false) }
+                        SubsectionAddHeader(
+                            title = "If you consistently overshoot",
+                            expanded = addingExcess,
+                            onToggle = { addingExcess = !addingExcess }
+                        )
+                        if (addingExcess) {
+                            AddAssociationRow(
+                                hint = "Add symptom (e.g. Nausea)",
+                                addLabel = "Add",
+                                onAdd = { label -> vm.addSymptom(label, SymptomSeed.KIND_EXCESS) }
+                            )
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        if (state.excessSymptoms.isEmpty()) {
+                            Text(
+                                "Nothing cataloged yet.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        } else {
                             SymptomChipFlow(
                                 state.excessSymptoms,
                                 onRemove = { key -> vm.removeSymptom(key, "EXCESS") }
                             )
                         }
-                        Spacer(Modifier.height(12.dp))
-                        AddAssociationRow(
-                            hint = "Add symptom (e.g. Night cramps)",
-                            addLabel = "Add",
-                            onAdd = { label -> vm.addSymptom(label, SymptomSeed.KIND_DEFICIENCY) }
-                        )
                     }
                 }
             }
@@ -655,12 +685,10 @@ fun NutrientDetailScreen(
 
             // ---- Reference cards -------------------------------------------------
             item { TargetsCard(state) }
-            state.def.deficiencySymptoms?.takeIf { it.isNotBlank() }?.let { sym ->
-                item { EffectsCard("Signs you're too low", sym) }
-            }
-            state.def.excessRisks?.takeIf { it.isNotBlank() }?.let { risks ->
-                item { EffectsCard("If you consistently overshoot", risks) }
-            }
+            // ("Signs you're too low" and "If you consistently overshoot"
+            // reference cards removed 2026-11-18 — both were redundant with
+            // the Symptoms section above, which lists the same links with
+            // confidence bars and manual management.)
         }
     }
 }
@@ -671,6 +699,7 @@ fun NutrientDetailScreen(
  * out the whole row wraps so digits never stack (feedback 2026-11-16). The
  * 🔬 researched marker is dropped from labels (emoji clutter feedback).
  * ✕ removes a wrong link (association management, 2026-11-17).
+ * ✍️ marks links the user added by hand (feedback 2026-11-18).
  */
 @Composable
 private fun SymptomChipFlow(rows: List<SymptomRow>, onRemove: (String) -> Unit) {
@@ -693,7 +722,7 @@ private fun SymptomChipFlow(rows: List<SymptomRow>, onRemove: (String) -> Unit) 
                 // INSIDE it and the fixed-size percent always renders on
                 // whatever line has room — never overlapped.
                 Text(
-                    s.display,
+                    if (s.manual) "✍️ ${s.display}" else s.display,
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.weight(1f)
                 )
@@ -738,7 +767,7 @@ private fun FoodAssocList(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    row.displayName,
+                    if (row.manual) "✍️ ${row.displayName}" else row.displayName,
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.weight(1f),
                     maxLines = 1, overflow = TextOverflow.Ellipsis
@@ -760,6 +789,34 @@ private fun FoodAssocList(
                     )
                 }
             }
+        }
+    }
+}
+
+/**
+ * Subsection title with a compact + toggle (feedback 2026-11-18): tapping +
+ * reveals the inline add-row right under the header (collapsed again after).
+ * Used by the Symptoms card's "If you're too low" / "If you consistently
+ * overshoot" headers — replaces the always-visible add box.
+ */
+@Composable
+private fun SubsectionAddHeader(
+    title: String,
+    expanded: Boolean,
+    onToggle: () -> Unit
+) {
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(title, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+        IconButton(onClick = onToggle, modifier = Modifier.size(28.dp)) {
+            Icon(
+                imageVector = if (expanded) Icons.Filled.Close else Icons.Filled.Add,
+                contentDescription = if (expanded) "Close add for $title" else "Add to $title",
+                modifier = Modifier.size(16.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }
@@ -941,11 +998,25 @@ private fun TargetsCard(state: NutrientPageState) {
                     style = MaterialTheme.typography.bodySmall
                 )
             }
-            state.def.ulValue?.let {
-                Text(
-                    "Upper limit: ${formatNutrient(it, state.def.unit)} — staying below is safest",
-                    style = MaterialTheme.typography.bodySmall
-                )
+            state.def.ulValue?.let { ul ->
+                // Supplemental-only ULs (magnesium): the NIH cap applies to
+                // pills/powders, NOT food — rendering it as a blanket "stay
+                // below" read as a contradiction vs the higher RDA
+                // (feedback 2026-11-18).
+                val supplementalOnly = state.def.id in NutrientKeys.SUPPLEMENTAL_ONLY_UL
+                if (supplementalOnly) {
+                    Text(
+                        "Supplement upper limit: ${formatNutrient(ul, state.def.unit)}/day — " +
+                            "this cap is for pills and powders only. Food has no upper limit, " +
+                            "which is why it can sit below the recommended daily amount.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                } else {
+                    Text(
+                        "Upper limit: ${formatNutrient(ul, state.def.unit)} — staying below is safest",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
             }
             Text(
                 if (state.hasTarget)
@@ -965,21 +1036,6 @@ private fun TargetsCard(state: NutrientPageState) {
     }
 }
 
-/** Deficiency-symptom / excess-risk explainer card. */
-@Composable
-private fun EffectsCard(title: String, body: String) {
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp)) {
-            Text(title, style = MaterialTheme.typography.titleSmall)
-            Spacer(Modifier.height(4.dp))
-            Text(
-                body.trimIndent().trim(),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-    }
-}
 
 /** One LLM/cache food suggestion (image with emoji fallback) — display-only. */
 @Composable

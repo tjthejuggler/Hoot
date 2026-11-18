@@ -136,6 +136,38 @@ for no breaking changes to the existing v1 surface.
 
 ## Changelog
 
+### 2026-11-18 (14) — Supplemental-UL clarity + manual ✍️ markers
+
+- **Magnesium UL contradiction fixed (root cause, not cosmetic):** the NIH
+  350 mg UL applies to SUPPLEMENTAL magnesium only; food has no UL. The seed
+  was already NIH-correct, but every surface rendered the raw number:
+  - `NutrientKeys.SUPPLEMENTAL_ONLY_UL` is now the single source of truth
+    (`ScoreSnapshotter` reuses it instead of its private copy);
+  - nutrient page Targets card: "Supplement upper limit: 350 mg/day — this
+    cap is for pills and powders only. Food has no upper limit, which is why
+    it can sit below the recommended daily amount.";
+  - History picker rows append "(supplements only)";
+  - HomeViewModel no longer flags food magnesium > 350 mg as EXCESS
+    (matched the score pipeline, which had already suppressed it).
+- **"Signs you're too low" AND "If you consistently overshoot" reference
+  cards removed** from the nutrient page — fully redundant with the
+  Symptoms section (same seed data, but Symptoms adds confidence bars,
+  remove ✕ and manual add). `EffectsCard` deleted with them.
+- **InsightsEngine** no longer counts food-magnesium days > 350 mg as
+  over-UL (last unqualified contradiction source — matched the score
+  pipeline and HomeViewModel).
+- **Symptoms "+" buttons:** the always-visible "Add symptom" box (which
+  also hard-wired every add to the DEFICIENCY kind) is gone; each
+  subsection header ("If you're too low" / "If you consistently overshoot")
+  now carries a + toggle revealing an inline input that adds with the
+  correct kind.
+- **✍️ manual markers:** symptoms the user linked by hand
+  (`source="MANUAL"`, persisted since 2026-11-17) and foods they manually
+  attached to a nutrient get a ✍️ prefix on the nutrient page. Foods store
+  per-nutrient manual links in new `food_knowledge.manualLinksJson`
+  (DB v8 → v9, additive; knowledge-pack export/import round-trips it).
+  Removing a link clears its manual marker too.
+
 ### 2026-11-17 (13) — Tail is fact: daily calories/macros match Tail exactly
 
 - **Root cause (feedback "calories today differ between Hoot and Tail")**:
