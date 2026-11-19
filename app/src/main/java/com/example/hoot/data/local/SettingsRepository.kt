@@ -5,6 +5,7 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -153,6 +154,14 @@ class SettingsRepository(private val context: Context) {
         val PILLS_SPLIT_RESYNC = booleanPreferencesKey("pills_split_resync_done")
         val TAILCUE_EXPORT_DIR = stringPreferencesKey("tailcue_export_dir_uri")
         val TAILCUE_BRIDGE = booleanPreferencesKey("tailcue_bridge_enabled")
+
+        // Foreground-only execution policy (battery fix, 2026-11-19): Tail
+        // broadcasts arriving while backgrounded only set a flag; the sync
+        // runs at the next foreground entry. Keys are NOT part of AppSettings
+        // (never rendered by the Settings UI).
+        val TAIL_SYNC_PENDING = booleanPreferencesKey("tail_sync_pending")
+        val TAIL_SYNC_LAST_RUN = longPreferencesKey("tail_sync_last_run")
+        val TAILCUE_EXPORT_DAY = stringPreferencesKey("tailcue_export_day")
     }
 
     val settings: Flow<AppSettings> = context.dataStore.data.map { p ->
@@ -299,5 +308,38 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun markPillsSplitResyncDone() {
         context.dataStore.edit { it[K.PILLS_SPLIT_RESYNC] = true }
+    }
+
+    // ---- Foreground-only execution bookkeeping (battery fix, 2026-11-19) --
+
+    /**
+     * True when a Tail broadcast (or other nudge) arrived while Hoot was
+     * backgrounded and the implied sync has not run yet. The foreground
+     * session starter consumes it; manual "Sync now" also clears it.
+     */
+    suspend fun tailSyncPending(): Boolean =
+        context.dataStore.data.first()[K.TAIL_SYNC_PENDING] ?: false
+
+    suspend fun markTailSyncPending(pending: Boolean = true) {
+        context.dataStore.edit { it[K.TAIL_SYNC_PENDING] = pending }
+    }
+
+    /** Epoch millis of the last completed sync pass (any trigger). */
+    suspend fun tailSyncLastRun(): Long =
+        context.dataStore.data.first()[K.TAIL_SYNC_LAST_RUN] ?: 0L
+
+    suspend fun markTailSyncRan() {
+        context.dataStore.edit { it[K.TAIL_SYNC_LAST_RUN] = System.currentTimeMillis() }
+    }
+
+    /**
+     * Calendar day ("yyyy-MM-dd") the last TailCue auto-export was written
+     * for — at most one export per day, at foreground entry.
+     */
+    suspend fun tailcueExportDay(): String =
+        context.dataStore.data.first()[K.TAILCUE_EXPORT_DAY] ?: ""
+
+    suspend fun markTailcueExportDay(day: String) {
+        context.dataStore.edit { it[K.TAILCUE_EXPORT_DAY] = day }
     }
 }

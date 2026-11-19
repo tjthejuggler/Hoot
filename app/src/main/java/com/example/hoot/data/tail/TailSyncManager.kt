@@ -32,8 +32,15 @@ import kotlinx.coroutines.sync.withLock
  *  5. Advances `lastMealSyncAt` / `lastPillsSyncAt` cursors (protocol v5's
  *     `?after=` incremental pattern) only after a pass with no hard failure.
  *
- * Also runs a coroutine-based periodic loop honoring the DataStore
- * `syncEnabled` / `syncIntervalMinutes` settings.
+ * Sync cadence is FOREGROUND-ONLY and demand-driven (battery fix,
+ * 2026-11-19): there is no background loop anymore. `syncEnabled` /
+ * `syncIntervalMinutes` gate and space on-demand runs — [onForeground] syncs
+ * when a broadcast nudge was deferred while backgrounded or when the last
+ * pass is older than the configured interval — and the periodic loop below
+ * only ticks while the app is VISIBLE, pausing (not restarting) whenever the
+ * UI goes away. A backgrounded Hoot performs zero ContentProvider pulls and
+ * zero network calls; broadcasts merely set a persisted pending flag
+ * (see [TailSyncReceiver]) consumed by the next foreground session.
  *
  * Row mapping (Tail API responses → Room entities) lives in
  * [TailEntityMapper] — pure JVM, covered by the `Tail*MappingTest` suites.
@@ -253,6 +260,14 @@ class TailSyncManager(
                 err
             }
         }.also { state ->
+            // Bookkeeping for the foreground-only cadence (battery fix,
+            // 2026-11-19): every completed pass — manual, broadcast (while
+            // foregrounded), periodic tick or foreground starter — refreshes
+            // the last-run stamp and clears the deferred-nudge flag.
+            runCatching {
+                settings.markTailSyncRan()
+                settings.markTailSyncPending(false)
+            }
             android.util.Log.d(
                 TAG, "sync($trigger): ${state::class.simpleName} " +
                     (state as? TailSyncState.Success)?.let {
@@ -285,22 +300,57 @@ class TailSyncManager(
         runCatching { nutrientDefinitions?.definitionsAll().orEmpty().associate { it.id to it.unit } }
             .getOrDefault(emptyMap())
 
-    /** Starts the coroutine periodic loop (no-op when already running). */
-    fun startPeriodicSync() {
+    /**
+     * Foreground session starter (battery fix, 2026-11-19). Called on every
+     * 0→1 activity transition. Syncs only when there is actually something
+     * to do:
+     *  - a Tail broadcast was deferred while backgrounded (persisted pending
+     *    flag), or
+     *  - the last pass is older than the user's `syncIntervalMinutes`
+     *    (catches data logged directly in Tail while Hoot was closed).
+     * Otherwise returns without a single provider query or network call.
+     */
+    suspend fun onForeground() {
+        val s = runCatching { settings.current() }.getOrNull() ?: return
+        if (!s.syncEnabled) return
+        val pending = runCatching { settings.tailSyncPending() }.getOrDefault(false)
+        val lastRun = runCatching { settings.tailSyncLastRun() }.getOrDefault(0L)
+        val stale = System.currentTimeMillis() - lastRun >= s.syncIntervalMinutes * 60_000L
+        if (pending || stale) {
+            runCatching { sync(TailSyncTrigger.STARTUP) }
+                .onFailure { android.util.Log.w(TAG, "foreground sync failed: ${it.message}") }
+        }
+    }
+
+    /**
+     * Foreground-visible periodic loop. Same tick body as before — honors
+     * `syncEnabled` / `syncIntervalMinutes` — but the loop EXITS when the app
+     * leaves the foreground instead of ticking into a dead process: a
+     * backgrounded Hoot held a live `while(true)` job (delay wakeups +
+     * full-pull provider reads every hour, on top of the broadcast-triggered
+     * cold starts) that never ended because nothing ever cancelled it.
+     * [restartPeriodicSyncIfVisible] is invoked on each foreground entry to
+     * relaunch it.
+     */
+    fun startPeriodicSync(visible: () -> Boolean) {
         if (periodicJob?.isActive == true) return
         periodicJob = scope.launch {
-            while (true) {
+            // Delay-first: the foreground entry's own demand sync
+            // ([onForeground]) already covered "just became visible", so the
+            // loop's first tick waits a full interval — no double pull.
+            while (visible()) {
                 val s = runCatching { settings.current() }.getOrNull()
                 val intervalMin = s?.syncIntervalMinutes ?: 60
-                val enabled = s?.syncEnabled ?: true
-                if (enabled) {
+                delay(intervalMin * 60_000L)
+                if (!visible()) break
+                if (s?.syncEnabled ?: true) {
                     runCatching { sync(TailSyncTrigger.PERIODIC) }
                 }
-                delay(intervalMin * 60_000L)
             }
         }
     }
 
+    /** Cancels the periodic loop if it is somehow still running. */
     fun stopPeriodicSync() {
         periodicJob?.cancel()
         periodicJob = null

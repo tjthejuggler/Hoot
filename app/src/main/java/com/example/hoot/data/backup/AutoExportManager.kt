@@ -50,26 +50,26 @@ class AutoExportManager(
     }
 
 
-    /** Keeps pushing fresh exports while the app process lives (every 6h),
-     *  so long-running sessions don't stall at a startup-only snapshot. */
-    fun startPeriodicExport() {
-        scope.launch {
-            while (true) {
-                kotlinx.coroutines.delay(java.util.concurrent.TimeUnit.HOURS.toMillis(6))
-                try {
-                    exportIfNeeded()
-                } catch (t: Throwable) {
-                    Log.w(TAG, "Periodic export failed: ${t.message}", t)
-                }
-            }
-        }
-    }
-
-    /** Safe startup hook — returns immediately, does all work on IO. */
-    fun runOnStartup() {
+    /**
+     * Foreground-only export cadence (battery fix, 2026-11-19). The old
+     * design ran an unconditional network export at EVERY process start —
+     * including the dozens of background cold starts Tail's habit broadcasts
+     * trigger daily — plus an infinite 6-hour re-export loop that kept a
+     * dead process waking itself. The export is a DAILY feature (TailCue
+     * ingests one file per day), so now: at most one export per calendar
+     * day, attempted only when the app enters the foreground. A session
+     * spanning midnight re-exports on its first foreground entry after the
+     * rollover (the day key is checked, not the process uptime).
+     */
+    fun runOnForeground() {
         scope.launch {
             try {
-                exportIfNeeded()
+                val today = DATE_FORMAT.format(Date())
+                if (settings.tailcueExportDay() == today) return@launch
+                val written = exportIfNeeded()
+                // Only stamp the day on success — a failed bridge push (PC
+                // offline) retries on the next foreground entry.
+                if (written) settings.markTailcueExportDay(today)
             } catch (t: Throwable) {
                 Log.w(TAG, "Auto-export failed: ${t.message}", t)
             }

@@ -46,6 +46,13 @@ class AppGraph(context: Context) {
     val appContext: Context = context.applicationContext
     val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
+    /**
+     * Foreground visibility gate (battery fix, 2026-11-19): started-activity
+     * counter exposed as a StateFlow. All periodic/deferred work consults it
+     * — Hoot performs network/provider work ONLY while visible.
+     */
+    val foregroundGate = ForegroundGate()
+
     /** DataStore-backed settings (LLM/MCP/Tail/diet/user-profile keys). */
     val settings = SettingsRepository(appContext)
 
@@ -320,9 +327,24 @@ class AppGraph(context: Context) {
     )
 
     init {
-        // Property initializers (including `nutritionPipeline`) have run by
-        // the time this executes — safe to wire the collectors.
-        nutritionPipeline.start()
+        // Foreground-only execution (battery fix, 2026-11-19): the pipeline's
+        // reaction collectors and self-heal set used to fire in AppGraph's
+        // constructor — i.e. in EVERY process, including the dozens of
+        // background cold starts Tail's habit broadcasts trigger daily, each
+        // spinning full-ledger recomputes and LLM resolution drains on a
+        // phone in a pocket. Now they arm at the FIRST foreground entry and
+        // stay armed for the process's life; background cold starts build the
+        // graph and immediately go quiet (no collectors, no loops, no
+        // network). "Once armed, stays armed" is deliberate: the collectors
+        // are cheap idle coroutines and re-arming them per session would drop
+        // in-flight sync states mid-drain.
+        var pipelineStarted = false
+        foregroundGate.onTransition { foreground ->
+            if (foreground && !pipelineStarted) {
+                pipelineStarted = true
+                nutritionPipeline.start()
+            }
+        }
     }
 
     /**

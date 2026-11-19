@@ -44,6 +44,15 @@ class TailSyncReceiver : BroadcastReceiver() {
             pending.finish()
             return
         }
+        // Foreground-only execution (battery fix, 2026-11-19): Tail logs
+        // entries dozens of times per day; each broadcast used to trigger a
+        // FULL sync (multiple ContentProvider pulls + ledger recompute),
+        // cold-starting the process in the background and keeping it churning
+        // for minutes. Now: foregrounded → sync immediately (user is watching
+        // data land in near-real-time); backgrounded → set a one-bit pending
+        // flag (persisted, cheap) and FINISH — the next foreground entry runs
+        // the deferred sync exactly once, no matter how many broadcasts
+        // piled up. The goAsync window comfortably covers the DataStore edit.
         graph.appScope.launch {
             try {
                 android.util.Log.d(
@@ -51,9 +60,13 @@ class TailSyncReceiver : BroadcastReceiver() {
                     "broadcast $action habit=${intent.getStringExtra(EXTRA_HABIT_ID)} " +
                         "entry=${intent.getStringExtra(EXTRA_ENTRY_ID)} ts=$eventTs"
                 )
-                graph.tailSync.sync(TailSyncTrigger.BROADCAST)
+                if (graph.foregroundGate.foreground.value) {
+                    graph.tailSync.sync(TailSyncTrigger.BROADCAST)
+                } else {
+                    graph.settings.markTailSyncPending()
+                }
             } catch (e: Exception) {
-                android.util.Log.w("TailSync", "broadcast-triggered sync failed: ${e.message}")
+                android.util.Log.w("TailSync", "broadcast handling failed: ${e.message}")
             } finally {
                 pending.finish()
             }
